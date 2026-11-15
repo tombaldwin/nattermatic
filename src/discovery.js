@@ -1,5 +1,6 @@
 // LAN discovery by encrypted UDP broadcast beacons. Deliberately does NOT use mDNS/Bonjour, so it
 // can never interfere with the OS's own hostname announcements.
+import crypto from 'node:crypto'
 import dgram from 'node:dgram'
 import os from 'node:os'
 import { sealBeacon, openBeacon } from './crypto.js'
@@ -42,10 +43,19 @@ export function startDiscovery(cfg, keys, onPeer, log) {
     const msg = beacon(false)
     if (msg) for (const a of broadcastAddrs()) sock.send(msg, port, a, () => {})
   }
+  // Each beacon is taken once, from the first address it comes from. Anyone on the LAN can capture one
+  // and send it again from other addresses: without this, every copy would set off a probe (a
+  // connection) and a reply. Beacons older than MAX_SKEW are refused anyway, so that's all it keeps.
+  /** @type {Map<string, number>} */
+  const seen = new Map()
   sock.on('message', (buf, rinfo) => {
+    const id = crypto.createHash('sha256').update(buf).digest('base64url')
+    if (seen.has(id)) return
     const b = openBeacon(keys().slice(-MAX_KEYS_TRIED), buf)
     if (!b || typeof b.host !== 'string' || typeof b.fp !== 'string' || b.fp === cfg.identity.fp) return
     if (!Number.isFinite(b.ts) || Math.abs(Date.now() - b.ts) > MAX_SKEW) return
+    seen.set(id, Date.now())
+    if (seen.size > 512) for (const [k, t] of seen) if (Date.now() - t > 2 * MAX_SKEW || seen.size > 4096) seen.delete(k)
     if (!Number.isInteger(b.port) || b.port <= 0 || b.port >= 65536) return
     if (!b.reply) { const r = beacon(true); if (r) sock.send(r, port, rinfo.address, () => {}) }   // answer so discovery is instant both ways
     onPeer({ host: b.host, fp: b.fp, addr: `${rinfo.address}:${b.port}` })

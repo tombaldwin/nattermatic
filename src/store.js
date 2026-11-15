@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 
 /*
@@ -14,6 +15,8 @@ import { DatabaseSync } from 'node:sqlite'
 /** @param {string} file */
 export function openStore(file) {
   const db = new DatabaseSync(file)
+  // it holds messages and lease notes as they are: this user's only, even if its folder were shared
+  for (const f of [file, `${file}-wal`, `${file}-shm`]) try { fs.chmodSync(f, 0o600) } catch {}
   db.exec(`
     PRAGMA journal_mode=WAL;
     PRAGMA busy_timeout=5000;

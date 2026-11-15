@@ -6,6 +6,11 @@
   (and why one can't be reached, including macOS's Local Network permission), Claude Code's accounts,
   Codex, and leftovers from before the rename. It says what to do about each problem and changes
   nothing.
+- **Security:** a LAN beacon is taken once, so someone on the same network can't make a node open
+  connection after connection by sending captured beacons again from other addresses; a node also
+  checks only a few new addresses at a time. Log lines escape what other machines send, the message
+  database is readable by this user only, and SECURITY.md now covers what a member can make another
+  machine do (connect to a host name, run an inviter's installer, break a lease).
 - `natter lease check` exits 2 on an error, so a script can tell an error from a resource that's held.
 - Dependencies: hono and @hono/node-server updated (they come with the MCP SDK; nattermatic doesn't use
   the code the alerts were about).

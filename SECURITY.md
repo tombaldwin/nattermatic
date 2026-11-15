@@ -18,7 +18,7 @@ the same membership from the same records.
   with its machine key. The client checks that this is the machine the roster says should be there,
   and only then signs the connection with its own key and sends its request. If anyone else answers
   at the address, they get nothing but that first, anonymous step, which has a time limit however
-  slowly they answer. Both signatures cover that one TLS session, so they can't be replayed, or
+  slowly they answer. (That step does show the client is nattermatic.) Both signatures cover that one TLS session, so they can't be replayed, or
   relayed by someone sitting in the middle.
 - **Addresses are only hints.** LAN beacons, gossiped addresses, configured names and the source
   IPs of requests can all be wrong or stale (DHCP reuse, a laptop on another network, spoofed
@@ -63,7 +63,9 @@ the same membership from the same records.
   `natter invite --revoke` cancels unused tokens. Starting or joining another network deletes the
   old network's invites and all its messages, and setup stops rather than start the node if it can't.
 - **Discovery.** LAN beacons are encrypted under a discovery key that members share only over
-  their TLS connections, so other people on the network can't read machine names from them. The
+  their TLS connections, so other people on the network can't read machine names from them. A beacon
+  is taken once: a captured one sent again, from any address, is ignored, and a node checks only a
+  few new addresses at a time. The
   discovery key is replaced whenever a machine is removed. A replaced key still opens other
   members' gates, and gets beacons answered, for 14 days, so a machine that was offline during a
   removal can catch up. After that, it needs a new invite.
@@ -73,15 +75,20 @@ the same membership from the same records.
   on the port is sent nothing. `/health` answers only them.
 - **Prompt injection.** Messages come from other AI agents. The MCP adapter instructs Claude to
   treat them as requests from a colleague — never as instructions from its user — and not to
-  take destructive or security-sensitive actions solely because a peer asked. Each message is framed
-  with a tag made for that read, so its text can't pass for another message from someone else. Nothing
+  take destructive or security-sensitive actions solely because a peer asked. Each message read with
+  the `inbox` tool is framed with a tag made for that read, so its text can't pass for another message
+  from someone else. A message pushed straight into a Claude Code session relies on Claude Code's own
+  framing of channel messages instead. Nothing
   else another machine writes reaches a session as nattermatic's own words: a session name must be one a
   node could have made, a machine's error text is dropped for its status code, and what a machine says
   about its leases is rebuilt from checked parts. A lease's note is its holder's own text, and is shown
   quoted and marked as theirs. Only invite machines and agents you trust.
 - **Leases.** Any member machine can claim, renew and release leases on another machine's resources
   for its own agents, and its node vouches for their names, as it does for messages. Breaking a lease
-  is a terminal command, never an agent tool. The heartbeat hook that renews a session's leases sends
+  isn't an agent tool, but it isn't locked down either: `natter lease break`, from a terminal on any
+  member machine, ends any lease, and so can an agent there that's allowed to run commands. Leases
+  are advisory, and the holder is told who broke it. Genuine lease notices come only from
+  `leases@` on the holder's own machine. The heartbeat hook that renews a session's leases sends
   only process ids to the local node; it never reads the tool call it follows.
 - **Waking a session.** Setup adds a Claude Code hook that waits in the background and wakes an idle
   session when a message arrives. What it shows Claude is fixed text saying a message is waiting:
@@ -142,7 +149,8 @@ the same membership from the same records.
   back in. The affected machines re-join with an invite.
 - **A removed machine can still tell which member it is talking to, for 14 days.** It can pass the
   gate with an old discovery key during the grace period, and learn which member is at an address
-  (which it knew already). It still can't send, receive or change the member list.
+  (which it knew already). It still can't send, receive or change the member list, but it can make
+  the node do some work, checking membership records it sends.
 - **Two removals at the same moment can leave a removed machine holding the current discovery key.**
   If one machine removes another that has already heard of a third's removal, the removed machine has
   the key that removal brought in, until the next removal by a current member, or a snapshot, replaces
@@ -156,6 +164,16 @@ the same membership from the same records.
   then: a second removal of a machine already removed, and one listing dozens of machines a full node
   has never heard of, if what fills that node was signed by someone else. Remove that machine first.
   `natter remove` says so if it's this machine's own roster that has no room.
+- **A member can make a node connect to any host name.** A message addressed to `x@some.host` makes
+  the sender's node, and any member holding a copy, look up that name and try to connect to it, until
+  the message expires. Nothing of the message is sent before the far end proves it's a member, but the
+  lookup and connection attempt come from your machine's address.
+- **Joining runs code from the machine that invited you.** The install line fetches the installer
+  and the npm package from the inviting machine (the pinned key proves it's that machine, not that it
+  can be trusted). The macOS app is checked against Polymorphism's Apple signature as well. Only run
+  invite lines from your own machines.
+- **Leases aren't under the message store's limits.** A member can claim many made-up resources.
+  Each lease ends within 4 hours, and a list shows at most 1,000.
 - **Agents on a machine aren't separately authenticated.** Any process running as your user can
   send as any session name on that machine.
 - **Invites are credentials until used.** Anyone who gets an unused invite line within 24 hours can

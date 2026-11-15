@@ -273,8 +273,9 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
     return { ok: true, broken: true, lease: view(row) }
   }
 
+  /** The leases held here (the first 1000: a list is for reading, and names are anyone's to make up). */
   function list() {
-    return /** @type {LeaseRow[]} */ (q.all.all()).filter(r => current(r.resource)).map(view)
+    return /** @type {LeaseRow[]} */ (q.all.all()).filter(r => current(r.resource)).slice(0, 1000).map(view)
   }
 
   /**

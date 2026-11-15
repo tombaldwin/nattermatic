@@ -60,11 +60,14 @@ const now = () => Date.now()
 const backoff = (/** @type {number} */ n) => Math.min(BACKOFF_MAX, 2000 * 2 ** Math.min(n, 5))
 const ignore = () => {}
 
+// log lines may quote what another machine sent: control characters in it can't start a line of their own
+const oneLine = (/** @type {unknown} */ a) => typeof a === 'string' ? a.replace(/[\x00-\x08\x0a-\x1f\x7f]/g, c => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`) : a
+
 /**
  * @param {Config} cfg
  * @param {(...a: any[]) => void} [log]
  */
-export async function runNode(cfg, log = (...a) => { try { console.error(new Date().toISOString(), ...a) } catch {} }) {
+export async function runNode(cfg, log = (...a) => { try { console.error(new Date().toISOString(), ...a.map(oneLine)) } catch {} }) {
   ensureHomeDir(cfg.dir)
   // a full disk mustn't take the node down with its log. (Once: a standby service gets here on every retry)
   if (!process.stderr.listeners('error').includes(ignore)) process.stderr.on('error', ignore)
@@ -384,6 +387,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
 
   const probing = new Set()
+  const MAX_PROBES = 8, MAX_PROBES_PER_HOST = 2
   /** @type {Map<string, number>} "host addr" -> when verification last failed */
   const probeFailed = new Map()
   /**
@@ -402,6 +406,9 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         return
       }
       if (probing.has(key) || now() - (probeFailed.get(key) || 0) < PROBE_RETRY_MS) return
+      // a few at a time, and few per machine: beacons can be replayed from any address on the LAN,
+      // and each probe is a connection and a copy of the roster (a real move is seen again in 30 s)
+      if (probing.size >= MAX_PROBES || [...probing].filter(k => k.startsWith(`${host} `)).length >= MAX_PROBES_PER_HOST) return
       probing.add(key)
       try {
         const data = await call(host, 'POST', '/v1/hello', helloBody(), { addr, timeout: 2500 })
@@ -411,7 +418,8 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         log(`${host} is at ${addr}`)
         if (q.wake.run(host).changes) kick()
       } catch { probeFailed.set(key, now()) } finally { probing.delete(key) }
-      if (probeFailed.size > 1000) probeFailed.clear()
+      // forget the oldest failures, never all of them: clearing them would end the throttle under a flood
+      if (probeFailed.size > 1000) for (const k of [...probeFailed.keys()].slice(0, probeFailed.size - 1000)) probeFailed.delete(k)
     } catch (e) { log('probe error', errMsg(e)) }
   }
 
