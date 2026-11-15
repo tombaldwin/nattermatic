@@ -15,6 +15,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { errMsg, homeDir, loadConfig, shQuote as sq, writeAtomic } from './config.js'
 import { Local } from './local.js'
 import { selfCmd, which } from './claude.js'
+import { waitForWakes } from './wake.js'
 
 const BEGIN = '# >>> nattermatic >>> (managed by `natter setup`; `natter uninstall` removes it)'
 const END = '# <<< nattermatic <<<'
@@ -24,11 +25,6 @@ const renamed = (/** @type {string} */ text) => text.replace(OLD_BEGIN, BEGIN).r
 // tools a woken session reads with, which it may use without asking (as for Claude Code)
 const READ_TOOLS = ['inbox', 'peers']
 const THREAD = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const RETRY_MS = 5000
-const SLOW_RETRY_MS = 30_000
-const SLOW_AFTER_MS = 120_000
-// with no session of that name for this long, the waiter gives up; resuming the session starts a new one
-const GIVE_UP_MS = 86400_000
 // a session that was there and has gone (its thread ended, or Codex closed it) is given this long to
 // come back (an adapter restarting), then its waiter stops
 const LOST_MS = Number(process.env.NATTERMATIC_CODEX_LOST_MS) || 10 * 60_000
@@ -202,40 +198,20 @@ export async function runCodexWake({ thread, pids: pidList, cwd, codex }) {
     local = new Local(loadConfig())
   } catch { return 0 }
   sweepMarks()
-  const mark = path.join(homeDir(), `codex-wake-${thread}`)
-  const me = String(process.pid)
-  try { fs.writeFileSync(mark, me) } catch {}
-  const isMine = () => { try { return fs.readFileSync(mark, 'utf8') === me } catch { return true } }
-  const finish = (/** @type {number} */ code) => { if (isMine()) fs.rmSync(mark, { force: true }); return code }
-  let since = Date.now(), seen = false, lostSince = 0
-  for (;;) {
-    if (!isMine()) return 0
-    /** @type {{ event: string, name?: string, count?: number } | null} */
-    let r = null, reached = true
-    try { r = await local.wakeWait(pids, cwd) } catch { reached = false }
-    if (!isMine()) return 0
-    if (r?.event === 'wake') {
+  return waitForWakes({
+    mark: path.join(homeDir(), `codex-wake-${thread}`),
+    wait: () => local.wakeWait(pids, cwd),
+    // a note in the session for each wake; the waiter carries on
+    onWake: r => {
       const name = r.name || 'this session'
       const q = spawnSync(codex, ['queue', '--thread', thread, '--message', codexWakeText(r.count || 1, name)], { encoding: 'utf8', timeout: 30_000 })
       if (q.status !== 0) log(`codex queue for ${name} (${thread}) failed: ${(q.stderr || q.error?.message || `exit ${q.status}`).trim()}`)
-      since = Date.now()
-      continue
-    }
-    if (r?.event === 'done') return finish(0)          // a newer waiter for this session took over
+      return undefined
+    },
     // Codex has gone: none of the processes it was started under is left
-    if (!pids.some(alive)) return finish(0)
-    // the session ended (its thread finished, or Codex closed it): once it's been gone a while, stop.
-    // Resuming it starts a new waiter. (Before it's first seen, its adapter may still be starting.)
-    if (r) seen = true
-    if (r?.event === 'closed') lostSince = Date.now()
-    else if (r) lostSince = 0
-    else if (reached && seen) lostSince ||= Date.now()
-    if (lostSince && Date.now() - lostSince > LOST_MS) return finish(0)
-    if (!reached || r?.event === 'closed') since = Date.now()
-    const waited = Date.now() - since
-    if (waited > GIVE_UP_MS) return finish(0)
-    await new Promise(res => setTimeout(res, waited > SLOW_AFTER_MS ? SLOW_RETRY_MS : RETRY_MS))
-  }
+    alive: () => pids.some(alive),
+    lostMs: LOST_MS,
+  })
 }
 
 /** @param {number} pid */

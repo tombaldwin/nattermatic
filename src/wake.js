@@ -107,27 +107,62 @@ export async function runWake() {
   const mine = claude && !testing ? [claude.pid] : pids
   const owner = mine[0]
   // one wait per session: each turn starts another, and the newest takes over, even with no node to ask
-  const mark = path.join(homeDir(), `wake-${owner}`)
-  const me = String(process.pid)
   sweepMarks()
+  return waitForWakes({
+    mark: path.join(homeDir(), `wake-${owner}`),
+    wait: () => local.wakeWait(mine),
+    // the hook's exit code 2 shows Claude this text, and its turn starts
+    onWake: r => { process.stderr.write(`${wakeText(r.count || 1, r.name || 'this session')}\n`); return 2 },
+    alive: () => { try { process.kill(owner, 0); return true } catch { return false } },
+  })
+}
+
+/** @typedef {{ event: string, name?: string, count?: number }} WakeEvent */
+
+/**
+ * The wait behind every wake hook, Claude Code's and Codex's: one waiter per session (the newest takes
+ * over, through its mark file), asking the node until there's news, and riding out a node that restarts.
+ * It stops when its session's agent has gone (`alive`), when its session was there and has been gone for
+ * `lostMs`, or after GIVE_UP_MS with no session at all.
+ * @param {{
+ *   mark: string, wait: () => Promise<WakeEvent | null>, alive: () => boolean,
+ *   onWake: (r: WakeEvent) => number | undefined, lostMs?: number, retryMs?: number, giveUpMs?: number,
+ * }} o onWake: the exit code to stop with, or undefined to go on waiting
+ * @returns {Promise<number>} the exit code
+ */
+export async function waitForWakes({ mark, wait, alive, onWake, lostMs = Infinity, retryMs = RETRY_MS, giveUpMs = GIVE_UP_MS }) {
+  const me = String(process.pid)
   try { fs.writeFileSync(mark, me) } catch {}
   const isMine = () => { try { return fs.readFileSync(mark, 'utf8') === me } catch { return true } }
   const finish = (/** @type {number} */ code) => { if (isMine()) fs.rmSync(mark, { force: true }); return code }
-  let since = Date.now()
+  let since = Date.now(), seen = false, lostSince = 0
   for (;;) {
     if (!isMine()) return 0                         // before asking: the newest wait is the one to be told
-    /** @type {{ event: string, name?: string, count?: number } | null} */
+    /** @type {WakeEvent | null} */
     let r = null, reached = true
-    try { r = await local.wakeWait(mine) } catch { reached = false }
-    if (r?.event === 'wake') { process.stderr.write(`${wakeText(r.count || 1, r.name || 'this session')}\n`); return finish(2) }
+    try { r = await wait() } catch { reached = false }
+    if (r?.event === 'wake') {
+      const code = onWake(r)
+      if (code !== undefined) return finish(code)
+      since = Date.now()
+      continue
+    }
     if (r?.event === 'done') return finish(0)       // a newer wait took over, or this session is woken another way
     if (!isMine()) return 0
-    try { process.kill(owner, 0) } catch { return finish(0) }    // Claude has gone
+    if (!alive()) return finish(0)                  // its agent has gone
+    // a session that was there and has gone may be back in a moment (its adapter restarting); not for ever.
+    // (Before it's first seen, it may have no adapter yet: one that started before an install has none
+    // until someone types /reload-plugins, which fires no hook, so the wait has to still be here then.)
+    if (r) seen = true
+    if (r?.event === 'closed') lostSince = Date.now()
+    else if (r) lostSince = 0
+    else if (reached && seen) lostSince ||= Date.now()
+    if (lostSince && Date.now() - lostSince > lostMs) return finish(0)
     // no node to ask (it may be restarting), or the session was there a moment ago: keep going
     if (!reached || r?.event === 'closed') since = Date.now()
     const waited = Date.now() - since
-    if (waited > GIVE_UP_MS) return finish(0)
-    await new Promise(res => setTimeout(res, waited > SLOW_AFTER_MS ? SLOW_RETRY_MS : RETRY_MS))
+    if (waited > giveUpMs) return finish(0)
+    await new Promise(res => setTimeout(res, waited > SLOW_AFTER_MS ? Math.max(retryMs, SLOW_RETRY_MS * retryMs / RETRY_MS) : retryMs))
   }
 }
 
