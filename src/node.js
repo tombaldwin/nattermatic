@@ -22,7 +22,7 @@ import { authedRequest, exporterOf, PinError, ProtoError, PROTO, MAX_BODY as MAX
 import { SEA, PKG_ROOT, readAsset, appBundle } from './self.js'
 import { renameOldDb } from './legacy.js'
 import { createLeases, parseResource, sessionId, cleanLease, MAX_RESOURCE, SID } from './leases.js'
-import { parseAddr, parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleName, localIPv4s, errMsg, netHint, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
+import { parseAddr, parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleNameAsync, localIPv4s, errMsg, netHint, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
 
 const MAX_JOIN_REQ = 16 << 10          // a join request (before any identity check) is small
 const MAX_JOIN_CHAIN = 4               // add records an unknown client may submit (it, whoever added it, ...)
@@ -231,15 +231,27 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     try { fn(); db.exec('COMMIT') } catch (e) { try { db.exec('ROLLBACK') } catch {} throw e }
   }
 
+  // a promise nothing waits on that fails is a bug to log, not a reason to stop delivering messages
+  process.on('unhandledRejection', e => log(`internal error (unhandled): ${errMsg(e)}`))
+  /** Run a callback from a timer or an event: a failure (a database error, say) is logged, not a crash. @param {() => unknown} fn */
+  const safe = fn => { try { fn() } catch (e) { log(`internal error: ${errMsg(e)}`) } }
+
   // ---------- identity ----------
   const selfAliases = new Set(cfg.aliases)
-  /** This machine's Tailscale name, if it has one now (Tailscale may arrive while the node runs). */
-  function tailscale() {
-    const name = cfg.autoAliases ? tailscaleName() : null
+  /** @type {{ at: number, name: string | null }} */
+  let tsCache = { at: 0, name: null }
+  /**
+   * This machine's Tailscale name, if it has one now (Tailscale may arrive while the node runs). Asked
+   * without blocking, and at most once a minute: a hung Tailscale would otherwise stall the node.
+   */
+  async function tailscale() {
+    if (!cfg.autoAliases) return null
+    if (now() - tsCache.at > 60_000) tsCache = { at: now(), name: await tailscaleNameAsync() }
+    const name = tsCache.name
     if (name && name !== cfg.host) selfAliases.add(name)
     return name
   }
-  tailscale()
+  tailscale().catch(ignore)
   selfAliases.delete(cfg.host)
   const isSelf = (/** @type {string} */ h) => h === cfg.host || selfAliases.has(h)
   /** A current member other than this machine, by name. @param {string} host */
@@ -632,7 +644,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     }
     if (s.res.writableLength > PUMP_BUFFER && !s.draining) {
       s.draining = true
-      s.res.once('drain', () => { s.draining = false; pump(name) })
+      s.res.once('drain', () => { s.draining = false; safe(() => pump(name)) })
     }
     if (more !== s.more) { s.more = more; sse(s.res, 'queue', { more }) }
     nudge(name)
@@ -694,7 +706,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
             else q.failed.run(`rejected by ${host} (invalid or malformed message)`, now(), r.id)
           }
         })
-        if (tell) setImmediate(() => hello(host))
+        if (tell) setImmediate(() => { hello(host).catch(e => log(`hello to ${host} failed: ${errMsg(e)}`)) })
       } catch (err) {
         const rest = rows.slice(rows.findIndex(r => r.id === batch[0].id))
         tx(() => { for (const r of rest) q.retry.run(now() + backoff(r.attempts), errMsg(err), now(), r.id) })
@@ -910,7 +922,9 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       return { ok: true, name: found[0] }
     }
     if (op === 'list') {
-      const auth = d.host ? await authorityFor(normHost(String(d.host))) : cfg.host
+      let host = cfg.host
+      if (d.host) try { host = normHost(String(d.host)) } catch { throw httpErr(400, `bad machine name "${d.host}"`) }
+      const auth = host === cfg.host ? host : await authorityFor(host)
       const r = await askAuthority(auth, { op: 'list' })
       return { ...r, held: leases.heldRows().map(h => ({ resource: `${h.resource}@${h.authority}`, holder: `${h.name}@${cfg.host}`, kind: h.kind })) }
     }
@@ -1346,7 +1360,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       case 'POST /local/nack': {               // the session couldn't take these: offer them again
         const s = sessions.get(d.name)
         for (const id of Array.isArray(d.ids) ? d.ids : []) s?.sent.delete(String(id))
-        if (s) setTimeout(() => pump(d.name), 2000)
+        if (s) setTimeout(() => safe(() => pump(d.name)), 2000)
         return reply(res, 200, { ok: true })
       }
       case 'POST /local/send':
@@ -1369,7 +1383,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       case 'POST /local/invite': {
         if (!roster.members.has(me.fp)) throw httpErr(409, 'this machine is not a member of its network, so it cannot invite others')
         const { token, fp } = newInvite()
-        return reply(res, 200, { token, fp, host: cfg.host, port: cfg.port, tailscale: tailscale(), ip: localIPv4s().find(a => !a.startsWith('127.')), expires_at: now() + INVITE_TTL_MS })
+        return reply(res, 200, { token, fp, host: cfg.host, port: cfg.port, tailscale: await tailscale(), ip: localIPv4s().find(a => !a.startsWith('127.')), expires_at: now() + INVITE_TTL_MS })
       }
       case 'GET /local/invites':                // open invites (their tokens are stored hashed, so only times)
         return reply(res, 200, { invites: q.openInvites.all(now()) })

@@ -2,7 +2,7 @@ import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { fingerprint } from './cert.js'
 
 export const VERSION = '0.4.0'
@@ -123,6 +123,22 @@ export function tailscaleName() {
   for (const bin of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
     try {
       const self = JSON.parse(execFileSync(bin, ['status', '--json'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })).Self
+      if (self?.Online !== false && self?.DNSName) return normHost(self.DNSName)
+    } catch {}
+  }
+  return null
+}
+
+/**
+ * tailscaleName() without blocking: for the node, whose every connection waits while a slow or hung
+ * Tailscale answers (each try may take up to 3 s).
+ * @returns {Promise<string | null>}
+ */
+export async function tailscaleNameAsync() {
+  for (const bin of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
+    const out = await new Promise(res => execFile(bin, ['status', '--json'], { encoding: 'utf8', timeout: 3000 }, (e, stdout) => res(e ? null : stdout)))
+    try {
+      const self = out ? JSON.parse(out).Self : null
       if (self?.Online !== false && self?.DNSName) return normHost(self.DNSName)
     } catch {}
   }

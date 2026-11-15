@@ -29,6 +29,9 @@ const SLOW_RETRY_MS = 30_000
 const SLOW_AFTER_MS = 120_000
 // with no session of that name for this long, the waiter gives up; resuming the session starts a new one
 const GIVE_UP_MS = 86400_000
+// a session that was there and has gone (its thread ended, or Codex closed it) is given this long to
+// come back (an adapter restarting), then its waiter stops
+const LOST_MS = Number(process.env.NATTERMATIC_CODEX_LOST_MS) || 10 * 60_000
 const MAX_LOG = 64 * 1024
 // what Codex shows for the hook when it asks the user to trust it
 const HOOK_NAME = 'nattermatic: wake this session when another agent messages it'
@@ -204,7 +207,7 @@ export async function runCodexWake({ thread, pids: pidList, cwd, codex }) {
   try { fs.writeFileSync(mark, me) } catch {}
   const isMine = () => { try { return fs.readFileSync(mark, 'utf8') === me } catch { return true } }
   const finish = (/** @type {number} */ code) => { if (isMine()) fs.rmSync(mark, { force: true }); return code }
-  let since = Date.now()
+  let since = Date.now(), seen = false, lostSince = 0
   for (;;) {
     if (!isMine()) return 0
     /** @type {{ event: string, name?: string, count?: number } | null} */
@@ -219,12 +222,24 @@ export async function runCodexWake({ thread, pids: pidList, cwd, codex }) {
       continue
     }
     if (r?.event === 'done') return finish(0)          // a newer waiter for this session took over
+    // Codex has gone: none of the processes it was started under is left
+    if (!pids.some(alive)) return finish(0)
+    // the session ended (its thread finished, or Codex closed it): once it's been gone a while, stop.
+    // Resuming it starts a new waiter. (Before it's first seen, its adapter may still be starting.)
+    if (r) seen = true
+    if (r?.event === 'closed') lostSince = Date.now()
+    else if (r) lostSince = 0
+    else if (reached && seen) lostSince ||= Date.now()
+    if (lostSince && Date.now() - lostSince > LOST_MS) return finish(0)
     if (!reached || r?.event === 'closed') since = Date.now()
     const waited = Date.now() - since
     if (waited > GIVE_UP_MS) return finish(0)
     await new Promise(res => setTimeout(res, waited > SLOW_AFTER_MS ? SLOW_RETRY_MS : RETRY_MS))
   }
 }
+
+/** @param {number} pid */
+const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { return /** @type {any} */ (e).code === 'EPERM' } }
 
 /** @param {string} m */
 function log(m) {

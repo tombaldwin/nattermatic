@@ -1105,7 +1105,7 @@ try {
     const hook = (session_id = thread) => spawnSync(EXE, [...PRE, 'codex-hook'], {
       // here the test is the parent of the adapter and the hook, as Codex's app-server is of both
       input: JSON.stringify({ session_id, cwd: process.cwd(), hook_event_name: 'SessionStart', source: 'startup' }),
-      env: { ...envFor('b'), PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8', timeout: 10_000,
+      env: { ...envFor('b'), PATH: `${bin}:${process.env.PATH}`, NATTERMATIC_CODEX_LOST_MS: '1500' }, encoding: 'utf8', timeout: 10_000,
     })
     const codexy = await adapter('b', 'codexy', true)
     const r = hook()
@@ -1128,10 +1128,10 @@ try {
     await sleep(1500)
     assert.equal(got().length, 2, 'one note per message')
     assert.equal(hook('not-a-session').status, 0, 'a hook given nonsense stays out of the way')
-    for (const f of fs.readdirSync(path.join(ROOT, 'b')).filter(f => f.startsWith('codex-wake-'))) {
-      try { process.kill(Number(fs.readFileSync(path.join(ROOT, 'b', f), 'utf8'))) } catch {}
-    }
+    // the session ends: its waiter stops soon after, instead of waiting a day for it to come back
     await codexy.close()
+    const marks = () => fs.readdirSync(path.join(ROOT, 'b')).filter(f => f.startsWith('codex-wake-'))
+    await waitFor(() => marks().length === 0, 15_000, 'the waiter to stop once its session had gone')
   })
 
   await step('local clients refuse a process squatting on the node port', async () => {

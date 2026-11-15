@@ -11,6 +11,11 @@
   checks only a few new addresses at a time. Log lines escape what other machines send, the message
   database is readable by this user only, and SECURITY.md now covers what a member can make another
   machine do (connect to a host name, run an inviter's installer, break a lease).
+- **Fixes from a full review:** a Codex session's waiter stops within minutes of the session ending,
+  instead of running for up to a day; making an invite no longer stalls the node while it asks
+  Tailscale for this machine's name; a bad machine name in a lease list is reported as one, not as an
+  internal error; a failure in a background task is logged instead of stopping the node; and setup
+  stops sessions starting a node while it replaces the machine's key.
 - `natter lease check` exits 2 on an error, so a script can tell an error from a resource that's held.
 - Dependencies: hono and @hono/node-server updated (they come with the MCP SDK; nattermatic doesn't use
   the code the alerts were about).

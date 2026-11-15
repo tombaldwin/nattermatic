@@ -36,6 +36,15 @@ const ok = (/** @type {string} */ m) => console.log(`  ✓ ${m}`)
 const warn = (/** @type {string} */ m) => console.log(`  ! ${m}`)
 
 /**
+ * While the key and the member list are being replaced, a session's adapter that sees its node stop
+ * mustn't start another one, which could read the new key with the old list. The `disabled` mark stops
+ * it (as after an uninstall) until setup has written both and clears it.
+ */
+function holdNodes() {
+  try { ensureHomeDir(); fs.writeFileSync(path.join(homeDir(), 'disabled'), '') } catch {}
+}
+
+/**
  * @param {{ host?: string, peers?: string[], noService?: boolean, noClaude?: boolean, noCodex?: boolean, noAlias?: boolean, newNetwork?: boolean,
  *           join?: string, pin?: string, net?: string, token?: string }} opts
  */
@@ -130,6 +139,7 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
     if (r.status !== 200) throw new Error(`could not join via ${join}: ${data.error || `HTTP ${r.status}`}`)
     const joined = new Roster({ net: String(data.net), records: data.records }, rosterPath())
     if (joined.members.get(id.fp)?.host !== myHost || !joined.byHost.has(String(data.host)) || (netFp && joined.net !== netFp)) throw new Error(`could not join via ${join}: it did not add this machine`)
+    holdNodes()
     await stopRunningNode(prev ? [prev] : [])
     if (!same) leaveNetwork()
     writeIdentity(id)
@@ -153,6 +163,7 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
         : 'this machine is not a member of its network. Join with an invite (`natter invite` on a member), or start a new network with --new-network')
     }
     const id = newIdentity()
+    holdNodes()
     await stopRunningNode(prev ? [prev] : [])
     leaveNetwork()
     writeIdentity(id)
