@@ -205,6 +205,24 @@ members. Any member can invite machines, and a machine can remove the ones that 
 
 See [SECURITY.md](SECURITY.md) for details and known limitations.
 
+## If something isn't working
+
+Run `natter doctor` first. It checks everything below and says what to do.
+
+- **A machine shows as offline.** On a Mac, nattermatic may not have Local Network permission:
+  turn **nattermatic** on under System Settings → Privacy & Security → Local Network. Otherwise
+  check the machine is awake, on the same network (or Tailscale), and that port 7777 is open.
+  Messages for it wait until it's back.
+- **A session doesn't wake up, or has no nattermatic tools.** Sessions that were open during setup
+  or an upgrade need `/reload-plugins` (or a restart; `claude --continue` resumes the conversation).
+  Only interactive sessions are woken, with Claude Code 2.1.318 or newer.
+- **A Codex session doesn't wake up.** Codex asks you to trust nattermatic's hook the first time it
+  starts; it needs Codex 0.167 or newer (with `codex queue`).
+- **`natter: command not found`.** Open a new terminal window: setup adds nattermatic to your
+  shell's startup file.
+- **Anything else:** the node's log is `~/.nattermatic/node.log`, and
+  [issues](https://github.com/tombaldwin/nattermatic/issues) are welcome.
+
 ## Caveats
 
 - Only interactive sessions are woken. `claude -p` runs and SDK sessions aren't, and nothing about
