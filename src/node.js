@@ -13,7 +13,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { openStore } from './store.js'
+import { openStore, queries } from './store.js'
 import { startDiscovery } from './discovery.js'
 import { signEnvelope, verifyEnvelope, sha256, randomToken, gateOk, proveAuth, checkAuth } from './crypto.js'
 import { fingerprint, shortFp, newIdentity, selfSignedCert } from './cert.js'
@@ -21,7 +21,9 @@ import { Roster, MAX_ROSTER_BYTES } from './roster.js'
 import { authedRequest, exporterOf, PinError, ProtoError, PROTO, MAX_BODY as MAX_REQ, MIN_RATE } from './tls.js'
 import { SEA, PKG_ROOT, readAsset, appBundle } from './self.js'
 import { renameOldDb } from './legacy.js'
-import { createLeases, parseResource, sessionId, cleanLease, MAX_RESOURCE, SID } from './leases.js'
+import { httpErr, PeerAnswered } from './errors.js'
+import { leaseApi } from './lease-api.js'
+import { createLeases, sessionId } from './leases.js'
 import { parseAddr, parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleNameAsync, localIPv4s, errMsg, netHint, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
 
 const MAX_JOIN_REQ = 16 << 10          // a join request (before any identity check) is small
@@ -109,57 +111,8 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   /** @type {Map<string, { res: Res, sent: Set<string>, token: string, live: boolean, owner: number, cwd: string, notified: Set<string>, waiter: Res | null, more: boolean, draining: boolean, lastActive: number }>} name -> session stream (live: woken by channel pushes; sent: offered, not yet acknowledged) */
   const sessions = new Map()
 
-  const q = {
-    insert: db.prepare(`INSERT OR IGNORE INTO messages
-      (id,from_addr,to_addr,to_host,to_name,body,sent_at,expires_at,sig,role,state,next_attempt,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`),
-    get: db.prepare(`SELECT * FROM messages WHERE id=?`),
-    // the names with something due, those tried least first, so a backlog for a machine that's off
-    // can't keep the others waiting; what's due for one name, the oldest first; and the names nothing
-    // has identified, the same way, so a crowd of made-up names can't keep a real one waiting
-    due: db.prepare(`SELECT to_host FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host IN (SELECT value FROM json_each(?)) GROUP BY to_host ORDER BY MIN(attempts)`),
-    dueFor: db.prepare(`SELECT id,to_host,role,attempts,replicated FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host=? ORDER BY sent_at LIMIT 2000`),
-    dueNames: db.prepare(`SELECT to_host FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host NOT IN (SELECT value FROM json_each(?)) GROUP BY to_host ORDER BY MIN(attempts) LIMIT ?`),
-    // handed over: the text has no more use here, and shouldn't sit on a holder until the message expires
-    forwarded: db.prepare(`UPDATE messages SET state='forwarded', body='', updated_at=? WHERE id=? AND state='pending'`),
-    failed: db.prepare(`UPDATE messages SET state='failed', last_error=?, updated_at=? WHERE id=?`),
-    retry: db.prepare(`UPDATE messages SET attempts=attempts+1, next_attempt=?, last_error=?, updated_at=? WHERE id=? AND state='pending'`),
-    replicated: db.prepare(`UPDATE messages SET replicated=1 WHERE id=?`),
-    wake: db.prepare(`UPDATE messages SET next_attempt=0 WHERE state='pending' AND to_host=?`),
-    toInbox: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, updated_at=? WHERE to_host=? AND state='pending' RETURNING to_name`),
-    inboxQueued: db.prepare(`SELECT id FROM messages WHERE role='inbox' AND to_name=? AND state='queued' AND expires_at>? ORDER BY sent_at LIMIT ?`),
-    // the machine's own copy of something it was holding as a copy for a name it didn't know was its own
-    claim: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, to_name=?, updated_at=? WHERE id=? AND role='held' AND state='pending'`),
-    delivered: db.prepare(`UPDATE messages SET state='delivered', updated_at=? WHERE id=? AND role='inbox'`),
-    // pushed into a channel session: Claude Code gives no receipt, so this means "shown", not "read"
-    pushed: db.prepare(`UPDATE messages SET state='pushed', updated_at=? WHERE id=? AND role='inbox' AND state='queued'`),
-    // newest to arrive: sent_at is whatever the sender says
-    history: db.prepare(`SELECT * FROM messages WHERE role='inbox' AND to_name=? ORDER BY rowid DESC LIMIT ?`),
-    expire: db.prepare(`UPDATE messages SET state='expired', updated_at=? WHERE state IN ('pending','queued') AND expires_at<=?`),
-    gc: db.prepare(`DELETE FROM messages WHERE expires_at < ?`),
-    counts: db.prepare(`SELECT role, state, count(*) n FROM messages GROUP BY role, state`),
-    waiting: db.prepare(`SELECT count(*) n FROM messages WHERE to_host=? AND to_name=? AND state IN ('pending','queued')`),
-    // pages in use: what's been freed is used again before the file grows
-    stored: db.prepare(`SELECT (p.page_count - f.freelist_count) * s.page_size n FROM pragma_page_count p, pragma_freelist_count f, pragma_page_size s`),
-    upsertPeer: db.prepare(`INSERT INTO peers(host,addr,last_seen,configured) VALUES(?,?,?,?)
-      ON CONFLICT(host) DO UPDATE SET last_seen=excluded.last_seen,
-        addr=COALESCE(excluded.addr, peers.addr), configured=MAX(peers.configured, excluded.configured)`),
-    peer: db.prepare(`SELECT * FROM peers WHERE host=?`),
-    peers: db.prepare(`SELECT * FROM peers ORDER BY host`),
-    setAlias: db.prepare(`UPDATE peers SET alias_of=? WHERE host=?`),
-    setVersion: db.prepare(`INSERT INTO peers(host,last_seen,configured,version) VALUES(?,?,0,?)
-      ON CONFLICT(host) DO UPDATE SET version=excluded.version`),
-    deletePeer: db.prepare(`DELETE FROM peers WHERE host=?`),
-    clearAddr: db.prepare(`UPDATE peers SET addr=NULL WHERE host=?`),
-    forgetPeers: db.prepare(`DELETE FROM peers WHERE configured=0 AND last_seen < ?`),
-    addInvite: db.prepare(`INSERT INTO invites(hash, created_at, expires_at) VALUES(?,?,?)`),
-    invite: db.prepare(`SELECT * FROM invites WHERE hash=?`),
-    useInvite: db.prepare(`UPDATE invites SET used_at=? WHERE hash=? AND used_at IS NULL`),
-    revokeInvites: db.prepare(`DELETE FROM invites WHERE used_at IS NULL`),
-    gcInvites: db.prepare(`DELETE FROM invites WHERE expires_at < ?`),
-    openInvite: db.prepare(`SELECT 1 FROM invites WHERE used_at IS NULL AND expires_at > ? LIMIT 1`),
-    openInvites: db.prepare(`SELECT created_at, expires_at FROM invites WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at`),
-  }
+  const q = queries(db)
+
 
   // ---------- the certificate we present ----------
   // While an invite is open, the invite key (the one its curl line pins; shared by all open invites,
@@ -354,7 +307,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     let data = {}
     try { data = r.text ? JSON.parse(r.text) : {} } catch { throw new Error(`${host}: bad reply`) }
     // only the status: what another machine writes here would reach sessions and terminals as our own words
-    if (r.status < 200 || r.status >= 300) throw new Error(`${host} answered HTTP ${r.status}`)
+    if (r.status < 200 || r.status >= 300) throw new PeerAnswered(host, r.status)
     q.upsertPeer.run(host, null, now(), 0)
     if (data.records) mergeRoster(data.records)
     return data
@@ -840,124 +793,15 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
 
   // ---------- local API helpers ----------
-  /** The member name of the machine a resource names, or throw. @param {string} h */
-  async function authorityFor(h) {
-    if (isSelf(h)) return cfg.host
-    if (member(h)) return h
-    const r = await routeFor(h).catch(() => null)
-    if (r === 'self') return cfg.host
-    if (r && member(r)) return r
-    throw httpErr(404, `${h} is not a machine on this network (machines: ${[cfg.host, ...knownPeers()].join(', ')})`)
-  }
-
-  /**
-   * Ask the machine that keeps a resource's leases. A machine on a version without leases answers
-   * 404 to any path it doesn't know: say which version it runs, if it has said.
-   * @param {string} auth @param {Record<string, unknown>} body
-   */
-  async function askAuthority(auth, body) {
-    if (auth === cfg.host) return remoteLease(cfg.host, body)
-    let r
-    try { r = await call(auth, 'POST', '/v1/lease', body, { timeout: 5000 }) } catch (e) {
-      if (/answered HTTP 404/.test(errMsg(e))) {
-        const v = peerRow(auth)?.version
-        throw httpErr(501, `${auth} runs ${v ? `nattermatic ${v}` : 'an older nattermatic'}, which doesn't have leases: it needs upgrading first`)
-      }
-      if (/answered HTTP/.test(errMsg(e))) throw httpErr(502, errMsg(e))
-      throw httpErr(503, `${auth} can't be reached, so its resources can't be claimed or released now (${errMsg(e)})`)
-    }
-    // what another machine says is rebuilt from checked parts: none of its words reach a session as ours
-    const flag = (/** @type {string} */ k) => r?.[k] === true
-    const lease = cleanLease(r?.lease, auth)
-    // a reply that must describe the lease and can't be read is an error, not a lease without details
-    const needs = body.op === 'claim' || (body.op === 'renew' && flag('ok')) || (body.op === 'release' && !flag('ok'))
-    if (needs && !lease) throw httpErr(502, `${auth} gave an answer about ${body.resource} that couldn't be read`)
-    return {
-      ok: flag('ok'), renewed: flag('renewed'), released: flag('released'), broken: flag('broken'), same_name: flag('same_name'), notify: flag('notify'), gone: flag('gone'),
-      lease,
-      ...(body.op === 'list' ? { host: auth, leases: (Array.isArray(r?.leases) ? r.leases.slice(0, 1000) : []).map((/** @type {unknown} */ l) => cleanLease(l, auth)).filter(Boolean) } : {}),
-    }
-  }
-
-  /**
-   * A lease request from a machine of the network (or this one), about one of this machine's
-   * resources. The holder's machine is the one that proved its key; its node vouches for the name.
-   * @param {string} from @param {Record<string, any>} d
-   */
-  function remoteLease(from, d) {
-    const op = String(d.op || '')
-    if (op === 'list') return { ok: true, host: cfg.host, leases: leases.list() }
-    const resource = String(d.resource || '')
-    let parsed = null
-    try { parsed = resource && resource.length <= MAX_RESOURCE ? parseResource(resource, cfg.host).name : null } catch {}
-    if (!parsed || resource !== parsed) throw httpErr(400, 'bad resource name')
-    if (op === 'check') { const row = leases.current(resource); return { ok: true, lease: row ? leases.view(row) : null } }
-    const name = sanitizeName(d.name)
-    if (op === 'break') return leases.breakLease({ resource, by: `${name}@${from}` })
-    const sid = String(d.sid || '')
-    if (!SID.test(sid)) throw httpErr(400, 'a lease needs the session that holds it')
-    /** @type {import('./leases.js').Holder} */
-    const holder = { host: from, name, sid, kind: d.kind === 'process' ? 'process' : 'session' }
-    if (op === 'claim') return leases.claim({ resource, holder, note: d.note, ttl_ms: d.ttl_ms, cap_ms: d.cap_ms, notify: d.notify, takeover: d.takeover })
-    if (op === 'release') return leases.release({ resource, holder, takeover: d.takeover })
-    if (op === 'renew') return leases.renew({ resource, holder, ttl_ms: d.ttl_ms })
-    if (op === 'rebind' && holder.kind === 'session' && SID.test(String(d.old_sid || ''))) return leases.rebind({ resource, holder, old_sid: String(d.old_sid) })
-    throw httpErr(400, `unknown lease request "${op}"`)
-  }
-
   /** The session whose owner is the first of `pids` (nearest first) to own one. @param {number[]} pids */
   const sessionOwnedBy = pids => pids.map(pid => [...sessions].find(([, x]) => x.owner === pid)).find(Boolean)
-
-  /**
-   * A lease request from this machine: a session's tool call (by its name: the node knows which
-   * session that is), a `natter lease` command (a process with its own id), or the heartbeat hook.
-   * @param {Record<string, any>} d
-   */
-  async function localLease(d) {
-    const op = String(d.op || '')
-    if (op === 'beat') {
-      const pids = (Array.isArray(d.pids) ? d.pids : []).map(Number).filter(Boolean)
-      const found = sessionOwnedBy(pids)
-      if (!found) return { ok: false }
-      found[1].lastActive = now()
-      return { ok: true, name: found[0] }
-    }
-    if (op === 'list') {
-      let host = cfg.host
-      if (d.host) try { host = normHost(String(d.host)) } catch { throw httpErr(400, `bad machine name "${d.host}"`) }
-      const auth = host === cfg.host ? host : await authorityFor(host)
-      const r = await askAuthority(auth, { op: 'list' })
-      return { ...r, held: leases.heldRows().map(h => ({ resource: `${h.resource}@${h.authority}`, holder: `${h.name}@${cfg.host}`, kind: h.kind })) }
-    }
-    let res
-    try { res = parseResource(d.resource, cfg.host) } catch (e) { throw httpErr(400, errMsg(e)) }
-    const auth = await authorityFor(res.host)
-    const resource = `${res.name}@${auth}`
-    if (op === 'check') return { ...(await askAuthority(auth, { op, resource: res.name })), resource }
-    if (op === 'break') return { ...(await askAuthority(auth, { op, resource: res.name, name: d.by || 'cli' })), resource }
-    /** @type {import('./leases.js').Holder} */
-    let holder
-    if (d.kind === 'process') {
-      if (!SID.test(String(d.sid || ''))) throw httpErr(400, 'a lease needs the process that holds it')
-      holder = { host: cfg.host, name: sanitizeName(d.name || 'cli'), sid: String(d.sid), kind: 'process' }
-    } else {
-      const s = sessions.get(String(d.name || ''))
-      if (!s?.token) throw httpErr(409, `no session named ${d.name || '(none)'} is connected to this machine's node`)
-      s.lastActive = now()
-      holder = { host: cfg.host, name: String(d.name), sid: sessionId(s.token), kind: 'session' }
-    }
-    if (!['claim', 'release', 'renew'].includes(op)) throw httpErr(400, `unknown lease request "${op}"`)
-    const ask = () => askAuthority(auth, { op, resource: res.name, name: holder.name, sid: holder.sid, kind: holder.kind, note: d.note, ttl_ms: d.ttl_ms, cap_ms: d.cap_ms, notify: d.notify, takeover: d.takeover })
-    // a release is forgotten here whatever happens: if the machine can't be told, the lease runs out
-    // (only this holder's own record: a refused release mustn't drop the real holder's)
-    if (op === 'release') { try { return { ...(await ask()), resource } } finally { leases.forget(auth, res.name, holder.sid) } }
-    const r = await ask()
-    if (r.ok && r.lease) {
-      if (op === 'claim') leases.noteHeld(auth, res.name, holder, r.lease.ttl_s * 1000)
-      else leases.noteRenewed(auth, res.name, holder.sid, r.lease.ttl_s * 1000)
-    } else if (op === 'renew') leases.forget(auth, res.name, holder.sid)
-    return { ...r, resource }
-  }
+  const { authorityFor, askAuthority, remoteLease, localLease } = leaseApi({
+    cfg, leases, sessions, now, isSelf, member, knownPeers,
+    routeFor: h => routeFor(h),
+    call: (h, m, p, o, opts) => call(h, m, p, o, opts),
+    version: h => peerRow(h)?.version,
+    ownedBy: sessionOwnedBy,
+  })
 
   /** @param {{ from?: unknown, to?: unknown, body?: unknown, ttl_ms?: unknown }} d */
   async function localSend(d) {
@@ -1553,8 +1397,6 @@ export function installScript(hostHeader, cfg, token, pin) {
 
 /** @param {http.ServerResponse} res @param {string} event @param {unknown} data */
 function sse(res, event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
-/** An error carrying the HTTP status to reply with. @param {number} status @param {string} message */
-function httpErr(status, message) { return Object.assign(new Error(message), { status }) }
 const isLoopback = (/** @type {string | undefined} */ a) => a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
 
 /** @param {http.IncomingMessage} req @returns {Promise<string>} */
