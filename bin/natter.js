@@ -98,6 +98,11 @@ async function main() {
       const { runBeat } = await import('../src/lease-cli.js')
       process.exit(await runBeat())
     }
+    case 'doctor': {
+      if (pos.length) throw new Error('usage: natter doctor')
+      const { runDoctor } = await import('../src/doctor.js')
+      process.exit(await runDoctor())
+    }
     case 'lease': {
       const { runLease } = await import('../src/lease-cli.js')
       process.exit(await runLease(pos, flags, client))

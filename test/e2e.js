@@ -1568,6 +1568,21 @@ try {
     await s.close()
   })
 
+  await step('leases: they last through a restart of either machine\'s node', async () => {
+    const s = await adapter('a', 'lease-durable')
+    assert.match(await s.call('claim', { resource: 'db@b.test', note: 'durable' }), /^Claimed/)
+    // the machine that keeps it restarts: the lease is in its database
+    await stopNode('b'); await startNode('b')
+    assert.match(check('a', 'db@b.test'), /held by lease-durable@a\.test/, 'kept through the authority\'s restart')
+    // the holder's machine restarts: the session reconnects as itself, and it's still its lease
+    await stopNode('a'); await startNode('a')
+    await sleep(2500)                                    // the adapter reconnects; past the wait for a session that has gone
+    assert.match(check('b', 'db@b.test'), /held by lease-durable@a\.test/, 'kept through the holder\'s restart')
+    assert.match(await s.call('claim', { resource: 'db@b.test', note: 'durable' }), /^Renewed/, 'and still its own')
+    assert.match(await s.call('release', { resource: 'db@b.test' }), /^Released/)
+    await s.close()
+  })
+
   await bob.close()
   console.log(`\nall ${passed} steps passed`)
 } catch (e) {

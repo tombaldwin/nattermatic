@@ -135,13 +135,16 @@ between your own machines.
 Claude handles everyday use and invites; these are for terminals and scripts.
 
     natter to <name@host> <msg>       natter who        natter status
+    natter doctor                     natter version
     natter invite [--list|--revoke]   natter remove <host>
     natter compact [--yes]            natter uninstall
     natter lease [list|check|claim|release|break|run]
 
 `natter help <command>` (or `natter <command> --help`) shows a command's options. `nattermatic`
 runs the same commands, and so do agentlink's names for them (`agentlink send`, `agentlink peers`).
-`natter who` says why a machine is offline (the node log, `~/.nattermatic/node.log`, records
+If something isn't working, run `natter doctor`: it checks the node, each machine on the
+network, Claude Code's accounts and Codex, and says what to do about anything wrong. `natter who`
+says why a machine is offline (the node log, `~/.nattermatic/node.log`, records
 when a machine stops or starts answering).
 
 Tab completion, including the addresses of agents that are online after `natter to`: add

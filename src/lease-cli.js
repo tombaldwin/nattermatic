@@ -38,7 +38,12 @@ export async function runLease(pos, flags, client) {
     }
     case 'check': {
       if (!resource || cmd.length) throw new Error('usage: natter lease check <resource>')
-      const r = await (await client()).req('POST', '/local/lease', { op: 'check', resource })
+      // exits 0 if it's free and 1 if it's held, so a script can wait on it: anything else is 2
+      let r
+      try { r = await (await client()).req('POST', '/local/lease', { op: 'check', resource }) } catch (e) {
+        console.error(`natter: ${e instanceof Error ? e.message : e}`)
+        return 2
+      }
       console.log(r.lease ? `${r.resource}: ${formatLease(r.lease)}` : `${r.resource} is free`)
       return r.lease ? 1 : 0
     }

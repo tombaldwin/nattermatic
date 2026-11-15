@@ -44,7 +44,7 @@ Example: natter to reviewer@laptop.local "the build is green"`,
 so agents on the network don't collide over it. Resources are named like agents: testdb@laptop.local
 (a bare name means this machine).
   natter lease list [--host <machine>]          the leases on a machine's resources
-  natter lease check <resource>                  exit 0 if it's free, 1 if it's held (for scripts)
+  natter lease check <resource>                  exit 0 if it's free, 1 if it's held, 2 on an error
   natter lease claim <resource> --note <why>    claim it from this terminal (--minutes, default 15)
   natter lease release <resource>                release a claim made from this terminal
   natter lease run <resource> -- <command...>    hold it exactly as long as the command runs
@@ -60,6 +60,12 @@ Agents claim leases with their claim tool. Only people break them.`,
   },
   { name: 'who', summary: 'show which agents are online, here and on other machines' },
   { name: 'status', summary: 'show this machine\'s node status as JSON' },
+  {
+    name: 'doctor', summary: 'check this machine\'s setup and say how to fix what\'s wrong',
+    help: `Checks the node, the network and each machine in it, Claude Code's accounts and Codex,
+and says what to do about anything that's wrong. It changes nothing.
+Exits 1 if something is broken, and 0 otherwise (with warnings or without).`,
+  },
   {
     name: 'remove', args: '<host>', summary: 'remove a machine from the network',
     help: `The machine can no longer send or receive. Run it on a machine that joined the network

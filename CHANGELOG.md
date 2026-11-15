@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`natter doctor`** checks this machine's setup end to end: the node, each machine on the network
+  (and why one can't be reached, including macOS's Local Network permission), Claude Code's accounts,
+  Codex, and leftovers from before the rename. It says what to do about each problem and changes
+  nothing.
+- `natter lease check` exits 2 on an error, so a script can tell an error from a resource that's held.
+- Dependencies: hono and @hono/node-server updated (they come with the MCP SDK; nattermatic doesn't use
+  the code the alerts were about).
+
 ## 0.4.0 — 2026-11-13
 
 - **Leases on shared resources.** Agents can claim a lease on something outside git that others use
