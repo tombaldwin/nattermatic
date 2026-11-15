@@ -1121,3 +1121,14 @@ test('the install preset keeps the short name that reached us: our other address
   assert.equal(line('desk.local:7777'), `set -- --join 'desk.local:7777' --pin 'p' --net 'n' "$@"`)
   assert.match(line('10.0.0.2:7777'), /--peer 'desk\.local:7777'/)
 })
+
+test('versions compare numerically, with pre-releases before their release', async () => {
+  const { cmpVersion } = await import('../../src/config.js')
+  const order = ['0.3.9', '0.4.0-rc.1', '0.4.0-rc.2', '0.4.0-rc.10', '0.4.0', '0.4.1', '0.10.0', '1.0.0-beta', '1.0.0']
+  for (let i = 0; i < order.length - 1; i++) {
+    assert.ok(cmpVersion(order[i], order[i + 1]) < 0, `${order[i]} < ${order[i + 1]}`)
+    assert.ok(cmpVersion(order[i + 1], order[i]) > 0, `${order[i + 1]} > ${order[i]}`)
+  }
+  assert.equal(cmpVersion('0.4.0', 'v0.4.0'), 0)
+  assert.equal(cmpVersion('0.4.0-rc.1', '0.4.0-rc.1'), 0)
+})

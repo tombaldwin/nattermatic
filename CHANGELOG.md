@@ -16,6 +16,7 @@
   Tailscale for this machine's name; a bad machine name in a lease list is reported as one, not as an
   internal error; a failure in a background task is logged instead of stopping the node; and setup
   stops sessions starting a node while it replaces the machine's key.
+- Versions with a pre-release part (0.5.0-rc.1) compare correctly: before their release, and in order.
 - `natter lease check` exits 2 on an error, so a script can tell an error from a resource that's held.
 - Dependencies: hono and @hono/node-server updated (they come with the MCP SDK; nattermatic doesn't use
   the code the alerts were about).

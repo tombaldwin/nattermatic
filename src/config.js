@@ -19,10 +19,27 @@ export const rosterPath = (dir = homeDir()) => path.join(dir, 'roster.json')
 export const sleep = (/** @type {number} */ ms) => new Promise(r => setTimeout(r, ms))
 /** Single-quote for sh. @param {unknown} v */
 export const shQuote = v => `'${String(v).replace(/'/g, `'\\''`)}'`
-/** Compare dotted versions numerically. @param {string} a @param {string} b */
+/**
+ * Compare versions: major.minor.patch numerically, then a pre-release (0.5.0-rc.1) before its release
+ * (0.5.0), and pre-releases by their numbers (rc.2 after rc.1). Negative, 0 or positive.
+ * @param {string} a @param {string} b
+ */
 export function cmpVersion(a, b) {
-  const x = String(a).split(/[.-]/).map(Number), y = String(b).split(/[.-]/).map(Number)
-  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0)
+  const parse = (/** @type {string} */ v) => {
+    const [core, pre = ''] = String(v).replace(/^v/, '').split(/-(.*)/s)
+    return { n: core.split('.').map(Number), pre: pre ? pre.split('.') : [] }
+  }
+  const x = parse(a), y = parse(b)
+  for (let i = 0; i < 3; i++) if ((x.n[i] || 0) !== (y.n[i] || 0)) return (x.n[i] || 0) - (y.n[i] || 0)
+  if (!x.pre.length || !y.pre.length) return y.pre.length - x.pre.length   // a release ranks above its pre-releases
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i], q = y.pre[i]
+    if (p === undefined || q === undefined) return p === undefined ? -1 : 1
+    const pn = /^\d+$/.test(p), qn = /^\d+$/.test(q)
+    if (pn && qn && Number(p) !== Number(q)) return Number(p) - Number(q)
+    if (pn !== qn) return pn ? -1 : 1
+    if (p !== q) return p < q ? -1 : 1
+  }
   return 0
 }
 
