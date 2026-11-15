@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 — 2026-11-15
 
 - **`natter doctor`** checks this machine's setup end to end: the node, each machine on the network
   (and why one can't be reached, including macOS's Local Network permission), Claude Code's accounts,
