@@ -27,9 +27,11 @@ const terminalSid = (local, name) => crypto.createHash('sha256').update(`natterm
  */
 export async function runLease(pos, flags, client) {
   const [sub, resource, ...cmd] = pos
-  const minutes = flags.minutes === undefined ? undefined : Number(flags.minutes)
-  if (minutes !== undefined && !(minutes > 0)) throw new Error('--minutes needs a number of minutes, such as 30')
-  const ttl = minutes ? { ttl_ms: minutes * 60_000 } : {}
+  const ttl = () => {
+    const minutes = flags.minutes === undefined ? undefined : Number(flags.minutes)
+    if (minutes !== undefined && !(minutes > 0)) throw new Error('--minutes needs a number of minutes, such as 30')
+    return minutes ? { ttl_ms: minutes * 60_000 } : {}
+  }
   switch (sub) {
     case 'list': case undefined: {
       if (resource) throw new Error('usage: natter lease list [--host <machine>]')
@@ -37,8 +39,8 @@ export async function runLease(pos, flags, client) {
       return 0
     }
     case 'check': {
-      if (!resource || cmd.length) throw new Error('usage: natter lease check <resource>')
       // exits 0 if it's free and 1 if it's held, so a script can wait on it: anything else is 2
+      if (!resource || cmd.length) { console.error('natter: usage: natter lease check <resource>'); return 2 }
       let r
       try { r = await (await client()).req('POST', '/local/lease', { op: 'check', resource }) } catch (e) {
         console.error(`natter: ${e instanceof Error ? e.message : e}`)
@@ -51,7 +53,7 @@ export async function runLease(pos, flags, client) {
       if (!resource || cmd.length) throw new Error(`usage: natter lease ${sub} <resource>${sub === 'claim' ? ' --note <why> [--minutes <n>]' : ''}`)
       const local = await client()
       const name = sanitizeName(flags.as || 'cli')
-      const r = await local.req('POST', '/local/lease', { op: sub, kind: 'process', name, sid: terminalSid(local, name), resource, note: flags.note || '', ...ttl })
+      const r = await local.req('POST', '/local/lease', { op: sub, kind: 'process', name, sid: terminalSid(local, name), resource, note: flags.note || '', ...ttl() })
       if (sub === 'claim') {
         if (r.ok) console.log(`${r.renewed ? 'renewed' : 'claimed'} ${r.resource} as ${name}: ${fmtLeft(r.lease.left_s * 1000)} (claim again to renew, release when done)`)
         else console.log(`not claimed: ${r.resource} is ${formatLease(r.lease)}`)

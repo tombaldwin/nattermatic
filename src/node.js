@@ -232,7 +232,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
 
   // a promise nothing waits on that fails is a bug to log, not a reason to stop delivering messages
-  process.on('unhandledRejection', e => log(`internal error (unhandled): ${errMsg(e)}`))
+  if (!process.listenerCount('unhandledRejection')) process.on('unhandledRejection', e => log(`internal error (unhandled): ${errMsg(e)}`))
   /** Run a callback from a timer or an event: a failure (a database error, say) is logged, not a crash. @param {() => unknown} fn */
   const safe = fn => { try { fn() } catch (e) { log(`internal error: ${errMsg(e)}`) } }
 
@@ -251,7 +251,8 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     if (name && name !== cfg.host) selfAliases.add(name)
     return name
   }
-  tailscale().catch(ignore)
+  // at startup it's waited for, as before: what follows decides what counts as this machine
+  await tailscale().catch(ignore)
   selfAliases.delete(cfg.host)
   const isSelf = (/** @type {string} */ h) => h === cfg.host || selfAliases.has(h)
   /** A current member other than this machine, by name. @param {string} host */

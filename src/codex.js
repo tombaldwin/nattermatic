@@ -15,7 +15,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { errMsg, homeDir, loadConfig, shQuote as sq, writeAtomic } from './config.js'
 import { Local } from './local.js'
 import { selfCmd, which } from './claude.js'
-import { waitForWakes } from './wake.js'
+import { alive, waitForWakes } from './wake.js'
 
 const BEGIN = '# >>> nattermatic >>> (managed by `natter setup`; `natter uninstall` removes it)'
 const END = '# <<< nattermatic <<<'
@@ -213,9 +213,6 @@ export async function runCodexWake({ thread, pids: pidList, cwd, codex }) {
     lostMs: LOST_MS,
   })
 }
-
-/** @param {number} pid */
-const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { return /** @type {any} */ (e).code === 'EPERM' } }
 
 /** @param {string} m */
 function log(m) {

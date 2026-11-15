@@ -67,3 +67,21 @@ test('a session not seen yet isn\'t given up for lost, and a newer waiter\'s mar
   assert.equal(code, 0)
   assert.equal(fs.readFileSync(mark, 'utf8'), 'someone else')
 })
+
+test('a session that went and came back isn\'t given up for lost later, on the strength of the old absence', async () => {
+  // closed (an adapter reconnecting), then a wait held open (the session is back) ending in a wake, then a
+  // node restart: the 404s that follow are a new absence, timed from now, not from the old "closed"
+  const mark = path.join(dir, 'back')
+  const script = [{ event: 'closed' }, 'hold', { event: 'wake', count: 1 }]
+  let i = 0
+  const code = await waitForWakes({
+    mark, retryMs: 5, giveUpMs: 2000, lostMs: 60, alive: () => true, onWake: () => undefined,
+    wait: async () => {
+      const r = script[i++] ?? null
+      if (r === 'hold') { await new Promise(res => setTimeout(res, 2100)); return { event: 'wake', count: 1 } }
+      return /** @type {any} */ (r)
+    },
+  })
+  assert.equal(code, 0)
+  assert.ok(i > 6, `gave up after only ${i} asks: the old absence was counted`)
+})

@@ -35,13 +35,20 @@ const sleepSync = (/** @type {number} */ ms) => Atomics.wait(new Int32Array(new 
 const ok = (/** @type {string} */ m) => console.log(`  ✓ ${m}`)
 const warn = (/** @type {string} */ m) => console.log(`  ! ${m}`)
 
+const disabledMark = () => path.join(homeDir(), 'disabled')
+const markDisabled = () => { try { ensureHomeDir(); fs.writeFileSync(disabledMark(), '') } catch {} }
+
 /**
- * While the key and the member list are being replaced, a session's adapter that sees its node stop
- * mustn't start another one, which could read the new key with the old list. The `disabled` mark stops
- * it (as after an uninstall) until setup has written both and clears it.
+ * Replace the key and the member list without a node starting in between: a session's adapter that sees
+ * its node stop mustn't start another, which could read the new key with the old list. The `disabled`
+ * mark stops it (as after an uninstall) for as long as `fn` runs, and goes when it ends, however it ends
+ * (unless the machine was uninstalled already, which the rest of setup undoes).
+ * @param {() => Promise<void>} fn
  */
-function holdNodes() {
-  try { ensureHomeDir(); fs.writeFileSync(path.join(homeDir(), 'disabled'), '') } catch {}
+async function whileHeld(fn) {
+  const was = fs.existsSync(disabledMark())
+  markDisabled()
+  try { await fn() } finally { if (!was) fs.rmSync(disabledMark(), { force: true }) }
 }
 
 /**
@@ -139,17 +146,18 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
     if (r.status !== 200) throw new Error(`could not join via ${join}: ${data.error || `HTTP ${r.status}`}`)
     const joined = new Roster({ net: String(data.net), records: data.records }, rosterPath())
     if (joined.members.get(id.fp)?.host !== myHost || !joined.byHost.has(String(data.host)) || (netFp && joined.net !== netFp)) throw new Error(`could not join via ${join}: it did not add this machine`)
-    holdNodes()
-    await stopRunningNode(prev ? [prev] : [])
-    if (!same) leaveNetwork()
-    writeIdentity(id)
-    if (same) {
-      // what we know and the inviter doesn't (a removal it hasn't heard of) must survive this. Read now:
-      // the node may have added to it since setup started
-      const mine = Roster.load(rosterPath())
-      mine.merge(data.records)
-      mine.save()
-    } else joined.save()
+    await whileHeld(async () => {
+      await stopRunningNode(prev ? [prev] : [])
+      if (!same) leaveNetwork()
+      writeIdentity(id)
+      if (same) {
+        // what we know and the inviter doesn't (a removal it hasn't heard of) must survive this. Read now:
+        // the node may have added to it since setup started
+        const mine = Roster.load(rosterPath())
+        mine.merge(data.records)
+        mine.save()
+      } else joined.save()
+    })
     allPeers = [...new Set([...(same ? existing.peers || [] : []), join, ...peers])]
     banner = same ? `Already a member of this network (via ${data.host}).` : `Joined the network via ${data.host}.`
   } else if (!member || newNetwork) {
@@ -163,11 +171,12 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
         : 'this machine is not a member of its network. Join with an invite (`natter invite` on a member), or start a new network with --new-network')
     }
     const id = newIdentity()
-    holdNodes()
-    await stopRunningNode(prev ? [prev] : [])
-    leaveNetwork()
-    writeIdentity(id)
-    Roster.genesis(id, myHost, rosterPath()).save()
+    await whileHeld(async () => {
+      await stopRunningNode(prev ? [prev] : [])
+      leaveNetwork()
+      writeIdentity(id)
+      Roster.genesis(id, myHost, rosterPath()).save()
+    })
     allPeers = [...peers]
     banner = 'New network created.'
     invite = true
@@ -439,7 +448,7 @@ WantedBy=default.target
 export async function uninstall() {
   const { label: LABEL, unit: UNIT } = serviceNames()
   // stops open sessions from restarting the node
-  try { ensureHomeDir(); fs.writeFileSync(path.join(homeDir(), 'disabled'), '') } catch {}
+  markDisabled()
   try {
     const local = new Local(loadConfig())
     if (await local.health()) await local.req('POST', '/local/shutdown')

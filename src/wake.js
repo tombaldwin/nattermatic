@@ -113,11 +113,14 @@ export async function runWake() {
     wait: () => local.wakeWait(mine),
     // the hook's exit code 2 shows Claude this text, and its turn starts
     onWake: r => { process.stderr.write(`${wakeText(r.count || 1, r.name || 'this session')}\n`); return 2 },
-    alive: () => { try { process.kill(owner, 0); return true } catch { return false } },
+    alive: () => alive(owner),
   })
 }
 
 /** @typedef {{ event: string, name?: string, count?: number }} WakeEvent */
+
+/** Is process `pid` still running? (One we may not signal, another user's, still counts.) @param {number} pid */
+export const alive = pid => { try { process.kill(pid, 0); return true } catch (e) { return /** @type {any} */ (e).code === 'EPERM' } }
 
 /**
  * The wait behind every wake hook, Claude Code's and Codex's: one waiter per session (the newest takes
@@ -140,7 +143,10 @@ export async function waitForWakes({ mark, wait, alive, onWake, lostMs = Infinit
     if (!isMine()) return 0                         // before asking: the newest wait is the one to be told
     /** @type {WakeEvent | null} */
     let r = null, reached = true
+    const asked = Date.now()
     try { r = await wait() } catch { reached = false }
+    // a wait that was held open, rather than turned away at once, means the session was there
+    if (reached && (r?.event === 'wake' || Date.now() - asked > 2000)) { seen = true; lostSince = 0 }
     if (r?.event === 'wake') {
       const code = onWake(r)
       if (code !== undefined) return finish(code)
@@ -157,12 +163,13 @@ export async function waitForWakes({ mark, wait, alive, onWake, lostMs = Infinit
     if (r?.event === 'closed') lostSince = Date.now()
     else if (r) lostSince = 0
     else if (reached && seen) lostSince ||= Date.now()
-    if (lostSince && Date.now() - lostSince > lostMs) return finish(0)
+    // (only while the node answers: a node that's down, restarting say, can't say the session has gone)
+    if (reached && lostSince && Date.now() - lostSince > lostMs) return finish(0)
     // no node to ask (it may be restarting), or the session was there a moment ago: keep going
     if (!reached || r?.event === 'closed') since = Date.now()
     const waited = Date.now() - since
     if (waited > giveUpMs) return finish(0)
-    await new Promise(res => setTimeout(res, waited > SLOW_AFTER_MS ? Math.max(retryMs, SLOW_RETRY_MS * retryMs / RETRY_MS) : retryMs))
+    await new Promise(res => setTimeout(res, waited > SLOW_AFTER_MS ? retryMs * (SLOW_RETRY_MS / RETRY_MS) : retryMs))
   }
 }
 

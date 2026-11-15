@@ -17,7 +17,7 @@ import { oldHome } from './legacy.js'
  *   health?: import('./types.js').Health | { foreign: true } | null,
  *   status?: any, peers?: any, nodeError?: string,
  *   claude?: { found: boolean, version: string, accounts: { alias: string, registered: boolean }[] },
- *   codex?: { present: boolean, configured: boolean, wakes: boolean },
+ *   codex?: { present: boolean, onPath?: boolean, configured: boolean, wakes: boolean },
  *   onPath: boolean, oldHome: boolean, oldCli: string, platform: string,
  * }} Facts
  * @typedef {{ level: 'ok' | 'warn' | 'fail', text: string, fix?: string }} Finding
@@ -42,23 +42,28 @@ export async function gather() {
       } catch (e) { f.nodeError = errMsg(e) }
     }
   }
-  const claude = claudeBin()
-  f.claude = claude
-    ? { found: true, version: wakeSupport().version, accounts: claudeAccounts().map(a => ({ alias: a.alias, registered: isRegistered(a.dir) })) }
-    : { found: false, version: '', accounts: [] }
+  if (claudeBin()) {
+    const support = wakeSupport()          // once: it runs `claude --version`
+    f.claude = { found: true, version: support.version, accounts: claudeAccounts().map(a => ({ alias: a.alias, registered: isRegistered(a.dir, support) })) }
+  } else f.claude = { found: false, version: '', accounts: [] }
   if (codexPresent()) {
     let text = ''
     try { text = fs.readFileSync(codexConfigFile(), 'utf8') } catch {}
-    f.codex = { present: true, configured: withoutBlock(text) !== text, wakes: canQueue(which('codex')) }
-  } else f.codex = { present: false, configured: false, wakes: false }
+    const codex = which('codex')
+    f.codex = { present: true, onPath: !!codex, configured: withoutBlock(text) !== text, wakes: canQueue(codex) }
+  } else f.codex = { present: false, onPath: false, configured: false, wakes: false }
   return f
 }
 
-/** An `agentlink` command on PATH that isn't this install's (an old npm or Homebrew copy), or ''. */
+/**
+ * An `agentlink` command on PATH from the old package (an npm or Homebrew install of
+ * @tombaldwin/agentlink, whose command was agentlink.js), or ''. This install's own `agentlink` (a
+ * link or a wrapper in ~/.nattermatic/bin, or a development checkout's bin/natter.js) isn't one.
+ */
 function oldCliPath() {
   const p = which('agentlink')
   if (!p) return ''
-  try { return fs.realpathSync(p).includes(`${path.sep}nattermatic`) ? '' : p } catch { return '' }
+  try { return /@tombaldwin[\\/]agentlink[\\/]|[\\/]agentlink\.js$/.test(fs.realpathSync(p)) ? p : '' } catch { return '' }
 }
 
 /** @param {Facts} f @returns {Finding[]} */
@@ -132,6 +137,7 @@ export function diagnose(f) {
   const x = f.codex
   if (x?.present) {
     if (!x.configured) warn('Codex is installed but nattermatic isn\'t added to it', 'run `natter setup`')
+    else if (x.onPath === false) warn('Codex\'s settings are here, but the codex command isn\'t on this shell\'s PATH, so it couldn\'t be checked', 'run `natter doctor` from a shell where `codex` works')
     else if (!x.wakes) warn('Codex is set up, but this Codex can\'t be woken by messages (it needs `codex queue`)', 'update Codex, then run `natter setup`')
     else ok('Codex is set up and can be woken')
   }

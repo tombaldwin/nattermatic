@@ -162,8 +162,11 @@ function rememberDir(dir) {
 /** Claude's per-account config file ('' = default account). @param {string} dir */
 const configFile = dir => dir ? path.join(dir, '.claude.json') : path.join(HOME, '.claude.json')
 
-/** @param {string} dir */
-export function isRegistered(dir) {
+/**
+ * @param {string} dir
+ * @param {{ ok: boolean }} [support] wakeSupport()'s answer, if the caller has it (it runs `claude --version`)
+ */
+export function isRegistered(dir, support) {
   try {
     const servers = JSON.parse(fs.readFileSync(configFile(dir), 'utf8')).mcpServers
     const s = servers?.nattermatic
@@ -172,7 +175,7 @@ export function isRegistered(dir) {
     // (a Claude Code too old for the hook is registered without it)
     const hooks = readSettings(settingsFile(dir)).hooks
     const has = (/** @type {string} */ ev, /** @type {string} */ cmd) => hooks?.[ev]?.some((/** @type {any} */ g) => g.hooks?.some((/** @type {any} */ h) => h.command === cmd))
-    return (WAKE_EVENTS.every(ev => has(ev, wakeCmd())) && has('PostToolUse', beatCmd())) || !wakeSupport().ok
+    return (WAKE_EVENTS.every(ev => has(ev, wakeCmd())) && has('PostToolUse', beatCmd())) || !(support || wakeSupport()).ok
   } catch { return false }
 }
 

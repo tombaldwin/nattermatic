@@ -61,3 +61,11 @@ test('a newer node with a newer protocol: an old natter is first on PATH', () =>
   f.health = { version: '99.0.0', proto: PROTO + 1, ok: true }
   assert.match(formatFindings(diagnose(f)), /older than the running node[^]*which -a natter/)
 })
+
+test('Codex\'s settings with no codex command on PATH: it says so, not "update Codex"', () => {
+  const f = healthy()
+  f.codex = { present: true, onPath: false, configured: true, wakes: false }
+  const text = formatFindings(diagnose(f))
+  assert.match(text, /isn't on this shell's PATH/)
+  assert.doesNotMatch(text, /update Codex/)
+})
