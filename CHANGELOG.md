@@ -23,6 +23,9 @@
   it is, to stop an older one, and in `natter doctor`. A session running when nattermatic was upgraded
   to a new protocol is told to restart, and its wake waiter stops instead of trying for as long as the
   session runs; a node of an older protocol is replaced.
+- A "your lease has ended" notice says when the lease was claimed and by which session name. It goes
+  to the name, so a session that restarted under it hears (its leases carry over to it); a new agent
+  given the same name later can tell the notice wasn't for it.
 - **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
   way meanwhile.
 - **Inside:** the node is split into modules with their own state (sessions, invites, other machines,

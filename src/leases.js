@@ -197,7 +197,10 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
     const res = `${row.resource}@${host()}`
     log(`lease on ${res} (${row.holder_name}@${row.holder_host}) ended: it ${why}`)
     if (tellHolder && row.kind === 'session') {
-      notify(`${row.holder_name}@${row.holder_host}`, `nattermatic: your lease on ${res} has ended: it ${why}. You no longer hold it: if you still need ${res}, claim it again before using it, and check nothing changed meanwhile.`)
+      // by name, so a session that restarted under it hears (its leases carry over to it); but a new
+      // agent given the same name later may get it too (#7), so it says which claim it was
+      const at = new Date(row.acquired_at).toISOString().slice(0, 16).replace('T', ' ')
+      notify(`${row.holder_name}@${row.holder_host}`, `nattermatic: your lease on ${res} has ended: it ${why}. You no longer hold it: if you still need ${res}, claim it again before using it, and check nothing changed meanwhile. (It was claimed at ${at} UTC by a session named ${row.holder_name}: if you never claimed ${res}, this was for an earlier session with your name, and you can ignore it.)`)
     }
     const waiters = /** @type {{ host: string, name: string }[]} */ (q.waiters.all(row.resource))
     q.unwait.run(row.resource)

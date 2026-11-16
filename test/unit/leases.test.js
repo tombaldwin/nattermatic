@@ -136,3 +136,13 @@ test('a restarted session whose leases could not be carried over gets them later
   tick(MIN / 6 + 1); await L.renewActive(ask)
   assert.deepEqual(asked.filter(b => b.resource === 'port').map(b => b.op), ['renew', 'renew'])
 })
+
+test("a holder's notice says which claim it was, for a later session given the same name (#7)", () => {
+  const { L, told } = setup()
+  assert.ok(L.claim({ resource: 'db', holder: session('api'), ttl_ms: 2 * MIN }).ok)
+  L.breakLease({ resource: 'db', by: 'cli@b.test' })
+  const n = told.at(-1)
+  assert.equal(n?.to, 'api@a.test')
+  assert.match(n?.body || '', /^nattermatic: your lease on db@a\.test has ended: it was broken by cli@b\.test\./)
+  assert.match(n?.body || '', /claimed at 1970-01-01 00:16 UTC by a session named api: if you never claimed db@a\.test, this was for an earlier session/)
+})
