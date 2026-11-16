@@ -93,9 +93,12 @@ async function main() {
           if (/** @type {NodeJS.ErrnoException} */ (e).code !== 'EADDRINUSE') throw e
           const local = new Local(cfg)
           const h = await local.health()
-          if (!h || 'foreign' in h) { console.error(`port ${cfg.port} is in use by something else`); process.exit(1) }
-          if (flags['on-demand']) { console.error(`another nattermatic node (pid ${h.pid}) is already running`); return }
-          if (!waited) { console.error(`another nattermatic node (pid ${h.pid}) is running; standing by`); waited = true }
+          if (h && 'foreign' in h) { console.error(`port ${cfg.port} is in use by something else`); process.exit(1) }
+          // nothing answered, but the port is held: most likely a node too busy to answer (#6), so it's
+          // waited for like one that answers, rather than the service exiting to be restarted over and over
+          const who = h ? `another nattermatic node (pid ${h.pid})` : `something that isn't answering (a busy nattermatic node?)`
+          if (flags['on-demand']) { console.error(h ? `${who} is already running` : `${who} holds port ${cfg.port}`); return }
+          if (!waited) { console.error(h ? `${who} is running; standing by` : `${who} holds port ${cfg.port}; standing by`); waited = true }
           await new Promise(r => setTimeout(r, 5000))
         }
       }

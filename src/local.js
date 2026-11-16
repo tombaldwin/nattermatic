@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import net from 'node:net'
 import crypto from 'node:crypto'
 import { authedRequest, authedRaw, PinError, StartingError, PROTO } from './tls.js'
 import { cmpVersion, ensureHomeDir, errMsg, readIdentity, rosterPath, sleep, VERSION } from './config.js'
@@ -14,6 +15,7 @@ import { Roster } from './roster.js'
 import { selfCmd } from './claude.js'
 
 const STARTING_WAIT_MS = 15_000   // how long a node may say it's starting before it's taken for absent
+const HELD_WAIT_MS = 10_000      // a node too busy to answer: how long a client waits before saying so
 const MAX_LOCAL_REPLY = 64 << 20   // the most an inbox read can come to: 100 messages of 64 KB, escaped
 
 /**
@@ -79,6 +81,8 @@ export class Local {
     /** when a node that keeps saying it's starting stops being waited for (0: not waiting) */
     this.startingUntil = 0
     this.startingWaitMs = STARTING_WAIT_MS
+    /** how long ensureNode waits for something holding the port that doesn't answer (#6) */
+    this.heldWaitMs = HELD_WAIT_MS
   }
 
   /**
@@ -175,9 +179,39 @@ export class Local {
     }
   }
 
+  /**
+   * Does anything accept connections on the port? A node whose event loop is blocked still does: the
+   * system accepts them for it, though it can't answer.
+   */
+  listening(timeout = 500) {
+    return new Promise(resolve => {
+      const c = net.connect({ host: '127.0.0.1', port: this.cfg.port, timeout }, () => { c.destroy(); resolve(true) })
+      c.on('timeout', () => { c.destroy(); resolve(false) })
+      c.on('error', () => resolve(false))
+    })
+  }
+
+  /**
+   * Nothing answered, but something holds the port: most likely this machine's node, busy (a long
+   * startup, a stalled disk). Starting another would only lose the race for the port, so wait for it,
+   * for one span of time however long each look takes; then say what's wrong.
+   */
+  async waitForSilent() {
+    const until = Date.now() + this.heldWaitMs
+    /** @type {Awaited<ReturnType<Local['health']>>} */
+    let h = null
+    while (!h && Date.now() < until && await this.listening()) {
+      await sleep(250)
+      h = await this.health()
+    }
+    if (!h && await this.listening()) throw new Error(`port ${this.cfg.port} is held by something that isn't answering, perhaps a stuck nattermatic node: see what it is with \`lsof -nP -iTCP:${this.cfg.port} -sTCP:LISTEN\``)
+    return h
+  }
+
   /** Make sure a node is running on this machine (start one in the background if not). */
   async ensureNode() {
     let h = await this.health()
+    if (!h && await this.listening()) h = await this.waitForSilent()
     if (h && 'foreign' in h) throw new Error(`port ${this.cfg.port} is used by something that is not this machine's nattermatic node`)
     if (h) {
       const action = nodeAction(h)
