@@ -49,7 +49,7 @@ export async function gather() {
     f.health = await local.health()
     if (f.health && !('foreign' in f.health)) {
       try {
-        ;[f.status, f.peers] = await Promise.all([local.req('GET', '/local/status'), local.req('GET', '/local/peers', undefined, '', 20_000)])
+        ;[f.status, f.peers] = await Promise.all([local.req('GET', '/local/status', undefined, '', 15_000, true), local.req('GET', '/local/peers', undefined, '', 20_000, true)])
       } catch (e) { f.nodeError = errMsg(e) }
     }
   }

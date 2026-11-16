@@ -9,7 +9,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import crypto from 'node:crypto'
-import { authedRequest, authedRaw, PinError, StartingError, PROTO } from './tls.js'
+import { authedRequest, authedRaw, PinError, ProtoError, StartingError, PROTO } from './tls.js'
 import { cmpVersion, ensureHomeDir, errMsg, readIdentity, rosterPath, sleep, VERSION } from './config.js'
 import { Roster } from './roster.js'
 import { selfCmd } from './claude.js'
@@ -99,9 +99,12 @@ export class Local {
     return true
   }
 
-  /** @param {{ path: string, method?: 'GET' | 'POST', body?: string, timeout?: number, signal?: AbortSignal }} o */
-  // anyProto: after an upgrade the running node may be the previous version; setup must still reach it to stop it
-  opts(o) { return { addr: this.addr, identity: this.cfg.identity, accept: this.accept, dks: readDks(this.cfg.dir), anyProto: true, ...o } }
+  /**
+   * anyProto: only for what has to reach a node of another protocol (#5): its health (to see which it
+   * is), stopping an older one, and doctor. Anything else fails with ProtoError, which wrap() explains.
+   * @param {{ path: string, method?: 'GET' | 'POST', body?: string, timeout?: number, signal?: AbortSignal, anyProto?: boolean }} o
+   */
+  opts(o) { return { addr: this.addr, identity: this.cfg.identity, accept: this.accept, dks: readDks(this.cfg.dir), ...o } }
 
   /**
    * `fn`, again every 200 ms while the node says it's still starting (from binding the port until
@@ -129,6 +132,10 @@ export class Local {
   /** @param {unknown} e */
   wrap(e) {
     if (e instanceof StartingError) return new Error(`the nattermatic node on port ${this.cfg.port} is still starting: try again in a moment`)
+    // a newer protocol: this program is out of date (restart it); an older one: that node gets replaced
+    if (e instanceof ProtoError) return e.theirs > PROTO
+      ? new StaleError(`nattermatic on this machine was upgraded (to protocol ${e.theirs}) while this program (${VERSION}, protocol ${PROTO}) was running, so it can't use the node any more`)
+      : new Error(`the nattermatic node on port ${this.cfg.port} is an older version (protocol ${e.theirs}; this program: ${PROTO}): it's replaced when a session reconnects, or by \`natter status\``)
     if (e instanceof PinError || /** @type {any} */ (e)?.code === 'EPROTO') return new Error(`port ${this.cfg.port} is not answered by this machine's nattermatic node`)
     return new Error(`cannot reach the nattermatic node on port ${this.cfg.port}: ${errMsg(e)}`)
   }
@@ -138,11 +145,12 @@ export class Local {
    * @param {'GET'|'POST'} method
    * @param {string} p
    * @param {object} [obj]
+   * @param {boolean} [anyProto] reach a node of another protocol too (see opts)
    * @returns {Promise<any>}
    */
-  async req(method, p, obj, query = '', timeout = 15_000) {
+  async req(method, p, obj, query = '', timeout = 15_000, anyProto = false) {
     let r
-    const send = () => this.whenStarted(() => authedRequest(this.opts({ method, path: p + query, body: obj === undefined ? '' : JSON.stringify(obj), timeout }), MAX_LOCAL_REPLY))
+    const send = () => this.whenStarted(() => authedRequest(this.opts({ method, path: p + query, body: obj === undefined ? '' : JSON.stringify(obj), timeout, anyProto }), MAX_LOCAL_REPLY))
     try {
       r = await send()
     } catch (e) {
@@ -171,7 +179,7 @@ export class Local {
   /** @returns {Promise<import('./types.js').Health | { foreign: true } | null>} */
   async health1() {
     try {
-      const r = await this.whenStarted(() => authedRequest(this.opts({ path: '/health', timeout: 1000 })))
+      const r = await this.whenStarted(() => authedRequest(this.opts({ path: '/health', timeout: 1000, anyProto: true })))
       return r.status === 200 ? JSON.parse(r.text) : { foreign: true }
     } catch (e) {
       // still "starting" after the whole wait: not a node that will answer (as before the wait existed)
@@ -218,7 +226,7 @@ export class Local {
       if (action === 'stale') throw staleError(h)
       if (action === 'use') return h
       // an older node (nattermatic was upgraded under it): replace it with this version
-      try { await this.req('POST', '/local/shutdown') } catch {}
+      try { await this.req('POST', '/local/shutdown', undefined, '', 15_000, true) } catch {}
       for (let i = 0; i < 30 && (h = await this.health()) && !('foreign' in h) && nodeAction(h) === 'replace'; i++) await sleep(100)
       if (usable(h) && nodeAction(h) === 'use') return h
     }
@@ -253,7 +261,10 @@ export class Local {
    * @returns {Promise<{ event: string, name?: string, count?: number } | null>}
    */
   async wakeWait(pids, cwd) {
-    const { res } = await this.whenStarted(() => authedRaw(this.opts({ timeout: 0, path: `/local/wake?pids=${pids.join(',')}${cwd ? `&cwd=${encodeURIComponent(cwd)}` : ''}` })))
+    let res
+    try {
+      ({ res } = await this.whenStarted(() => authedRaw(this.opts({ timeout: 0, path: `/local/wake?pids=${pids.join(',')}${cwd ? `&cwd=${encodeURIComponent(cwd)}` : ''}` }))))
+    } catch (e) { throw e instanceof ProtoError ? this.wrap(e) : e }
     if (res.statusCode !== 200) { res.destroy(); return null }
     for await (const { event, data } of sseEvents(res)) { res.destroy(); return { event, ...data } }
     return { event: 'closed' }

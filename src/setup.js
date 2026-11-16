@@ -312,7 +312,7 @@ async function stopRunningNode(cfgs) {
     const l = new Local(c)
     const h = await l.health()
     if (!h || 'foreign' in h) continue
-    try { await l.req('POST', '/local/shutdown') } catch (e) { warn(`could not stop the running node: ${errMsg(e)}`); continue }
+    try { await l.req('POST', '/local/shutdown', undefined, '', 15_000, true) } catch (e) { warn(`could not stop the running node: ${errMsg(e)}`); continue }
     for (let i = 0; i < 30 && await l.health(); i++) await sleep(100)
     stopped = true
   }
@@ -453,7 +453,7 @@ export async function uninstall() {
   markDisabled()
   try {
     const local = new Local(loadConfig())
-    if (await local.health()) await local.req('POST', '/local/shutdown')
+    if (await local.health()) await local.req('POST', '/local/shutdown', undefined, '', 15_000, true)
   } catch {}
   if (!homeElsewhere()) removeOldService()
   if (process.platform === 'darwin') {

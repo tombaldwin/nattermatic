@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { homeDir, loadConfig } from './config.js'
-import { Local } from './local.js'
+import { Local, StaleError } from './local.js'
 import { isPrintFlag } from './claude.js'
 
 const RETRY_MS = 5000
@@ -144,7 +144,11 @@ export async function waitForWakes({ mark, wait, alive, onWake, lostMs = Infinit
     /** @type {WakeEvent | null} */
     let r = null, reached = true
     const asked = Date.now()
-    try { r = await wait() } catch { reached = false }
+    try { r = await wait() } catch (e) {
+      // the node speaks a newer protocol than this program: it can't wait there, now or later (#5)
+      if (e instanceof StaleError) return finish(0)
+      reached = false
+    }
     // a wait that was held open, rather than turned away at once, means the session was there
     if (reached && (r?.event === 'wake' || Date.now() - asked > 2000)) { seen = true; lostSince = 0 }
     if (r?.event === 'wake') {

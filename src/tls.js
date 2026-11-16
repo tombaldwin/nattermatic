@@ -34,6 +34,7 @@ export class ProtoError extends Error {
   /** @param {number} theirs */
   constructor(theirs) {
     super(`it runs ${theirs > PROTO ? 'a newer' : 'an older'} version of nattermatic (protocol ${theirs}; this machine: ${PROTO}). Upgrade the older machine: re-run the installer, or \`npm install -g nattermatic\` and \`natter setup\``)
+    this.theirs = theirs
   }
 }
 

@@ -19,6 +19,10 @@
   waits for up to 10 seconds, and then says the port is held by something that isn't answering and
   how to see what it is. The background service stands by in that case, instead of exiting to be
   restarted over and over.
+- **Programs on this machine only talk to a node of the same protocol**, except to check which node
+  it is, to stop an older one, and in `natter doctor`. A session running when nattermatic was upgraded
+  to a new protocol is told to restart, and its wake waiter stops instead of trying for as long as the
+  session runs; a node of an older protocol is replaced.
 - **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
   way meanwhile.
 - **Inside:** the node is split into modules with their own state (sessions, invites, other machines,
