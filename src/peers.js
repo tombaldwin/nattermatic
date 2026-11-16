@@ -9,6 +9,7 @@ import { normHost, validAddr, errMsg, netHint, VERSION } from './config.js'
 
 const MAX_REPLY = 1 << 20              // a reply to anything but a hello: only a hello carries a roster
 const PROBE_RETRY_MS = 10 * 60_000     // don't re-probe an address that just failed verification
+const STARTING_RETRY_MS = 30_000       // ...or, sooner, one whose node said it was starting
 const MAX_PROBES = 8, MAX_PROBES_PER_HOST = 2
 export const HELLO_CONCURRENCY = 2     // offline .local names tie up a DNS (libuv) thread each for seconds
 
@@ -92,6 +93,8 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     try {
       r = await authedRequest({ addr: target, method, path: p, body, headers: { 'x-agentlink-port': String(cfg.port) }, identity: me, accept: new Map([[m.fp, m.publicKey]]), dks: roster.dks, timeout, deadline }, p === '/v1/hello' ? MAX_REQ : MAX_REPLY)
     } catch (e) {
+      // its node is starting (unproved): not unreachable, and not to be logged as if it were
+      if (e instanceof StartingError) throw Object.assign(new StartingError(`${host} at ${target}: its node is starting`), { reason: `${target}: its node is starting` })
       // reason: why the machine can't be reached, without its name (peers shows it next to the name)
       const reason = e instanceof PinError ? `${target} is answered by a different machine (not ${host}'s key)`
         : e instanceof ProtoError ? e.message
@@ -183,8 +186,9 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
         log(`${host} is at ${addr}`)
         if (q.wake.run(host).changes) kick()
       } catch (e) {
-        // a node still starting hasn't failed the check: it can be tried again at the next sighting
-        if (!(e instanceof StartingError)) probeFailed.set(key, now())
+        // a node still starting hasn't failed the check: it may be tried again sooner. Not at once: the
+        // claim is unproved, and an address that always makes it mustn't get past the throttle
+        probeFailed.set(key, e instanceof StartingError ? now() - PROBE_RETRY_MS + STARTING_RETRY_MS : now())
       } finally { probing.delete(key) }
       // forget the oldest failures, never all of them: clearing them would end the throttle under a flood
       if (probeFailed.size > 1000) for (const k of [...probeFailed.keys()].slice(0, probeFailed.size - 1000)) probeFailed.delete(k)

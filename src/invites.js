@@ -76,10 +76,10 @@ export function createInvites({ present, q, dir, now, log }) {
       invite = id
     }
     const inv = /** @type {Identity} */ (invite)
-    const token = randomToken()
-    q.addInvite.run(sha256(token), now(), now() + INVITE_TTL_MS)
+    const token = randomToken(), t = now()
+    q.addInvite.run(sha256(token), t, t + INVITE_TTL_MS)
     rotate()
-    return { token, fp: inv.fp, expires_at: now() + INVITE_TTL_MS }
+    return { token, fp: inv.fp, expires_at: t + INVITE_TTL_MS }
   }
 
   /** Can this token still be used? @param {string} token */

@@ -76,6 +76,9 @@ export class Local {
     this.cfg = cfg
     this.addr = `127.0.0.1:${cfg.port}`
     this.accept = new Map([[cfg.identity.fp, crypto.createPublicKey(cfg.identity.key)]])
+    /** when a node that keeps saying it's starting stops being waited for (0: not waiting) */
+    this.startingUntil = 0
+    this.startingWaitMs = STARTING_WAIT_MS
   }
 
   /**
@@ -99,13 +102,21 @@ export class Local {
   /**
    * `fn`, again every 200 ms while the node says it's still starting (from binding the port until
    * it's ready: reading its database, asking Tailscale its name). A node starting up is neither
-   * absent nor something else on the port.
+   * absent nor something else on the port. The wait is one window from when "starting" was first
+   * heard, shared by every call, so a caller polling in a loop waits it out once; past it, the
+   * StartingError is thrown at once. (Unproved, so a squatter saying it forever costs one window.)
    * @template T @param {() => Promise<T>} fn @returns {Promise<T>}
    */
   async whenStarted(fn) {
-    for (const until = Date.now() + STARTING_WAIT_MS; ;) {
-      try { return await fn() } catch (e) {
-        if (!(e instanceof StartingError) || Date.now() >= until) throw e
+    for (;;) {
+      try {
+        const r = await fn()
+        this.startingUntil = 0
+        return r
+      } catch (e) {
+        if (!(e instanceof StartingError)) { this.startingUntil = 0; throw e }
+        this.startingUntil ||= Date.now() + this.startingWaitMs
+        if (Date.now() >= this.startingUntil) throw e
         await sleep(200)
       }
     }
@@ -159,7 +170,8 @@ export class Local {
       const r = await this.whenStarted(() => authedRequest(this.opts({ path: '/health', timeout: 1000 })))
       return r.status === 200 ? JSON.parse(r.text) : { foreign: true }
     } catch (e) {
-      return e instanceof PinError || /** @type {any} */ (e)?.code === 'EPROTO' ? { foreign: true } : null
+      // still "starting" after the whole wait: not a node that will answer (as before the wait existed)
+      return e instanceof PinError || e instanceof StartingError || /** @type {any} */ (e)?.code === 'EPROTO' ? { foreign: true } : null
     }
   }
 
@@ -207,7 +219,7 @@ export class Local {
    * @returns {Promise<{ event: string, name?: string, count?: number } | null>}
    */
   async wakeWait(pids, cwd) {
-    const { res } = await authedRaw(this.opts({ timeout: 0, path: `/local/wake?pids=${pids.join(',')}${cwd ? `&cwd=${encodeURIComponent(cwd)}` : ''}` }))
+    const { res } = await this.whenStarted(() => authedRaw(this.opts({ timeout: 0, path: `/local/wake?pids=${pids.join(',')}${cwd ? `&cwd=${encodeURIComponent(cwd)}` : ''}` })))
     if (res.statusCode !== 200) { res.destroy(); return null }
     for await (const { event, data } of sseEvents(res)) { res.destroy(); return { event, ...data } }
     return { event: 'closed' }
@@ -224,12 +236,12 @@ export class Local {
   async stream(name, token, onEvent, { signal, poll = false } = {}) {
     let res
     try {
-      ({ res } = await authedRaw(this.opts({
+      ({ res } = await this.whenStarted(() => authedRaw(this.opts({
         timeout: 0, signal,
         // owner and cwd: the session that started this adapter, so its hook can find it: Claude Code's
         // process (see wake.js), or Codex's shared app-server and the session's folder (see codex.js)
         path: `/local/stream?name=${encodeURIComponent(name)}&token=${encodeURIComponent(token)}&owner=${process.ppid}&cwd=${encodeURIComponent(process.cwd())}${poll ? '&mode=poll' : ''}`,
-      })))
+      }))))
     } catch (e) { throw /** @type {any} */ (e)?.name === 'AbortError' ? e : this.wrap(e) }
     if (res.statusCode !== 200) { res.destroy(); throw new Error(`stream HTTP ${res.statusCode}`) }
     for await (const { event, data } of sseEvents(res)) await onEvent(event, data)

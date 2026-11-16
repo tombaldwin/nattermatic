@@ -19,6 +19,13 @@ const PING_MS = 20_000
 /** @param {Res} res @param {string} event @param {unknown} data */
 export function sse(res, event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
 
+/** Start an event stream: its headers, a ping to keep it open, and `onClose` when it ends. @param {Res} res @param {() => void} onClose */
+function openStream(res, onClose) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+  const ping = setInterval(() => res.write(': ping\n\n'), PING_MS)
+  res.on('close', () => { clearInterval(ping); onClose() })
+}
+
 /**
  * @param {{
  *   q: ReturnType<typeof import('./store.js').queries>,
@@ -85,7 +92,6 @@ export function createSessions({ q, msgRow, tx, now, safe, host }) {
     const reconnecting = existing && token && existing.token === token ? existing : null
     if (reconnecting) { reconnecting.res.end(); reconnecting.waiter?.end(); map.delete(want) }
     for (let i = 2; map.has(name); i++) name = `${want.slice(0, 47 - String(i).length)}-${i}`   // stays within the 48-char name limit
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
     /** @type {Session} */
     const s = {
       res, sent: new Set(), token, live, owner, cwd,
@@ -93,9 +99,8 @@ export function createSessions({ q, msgRow, tx, now, safe, host }) {
       lastActive: reconnecting?.lastActive ?? 0,     // only the session's own actions count
     }
     map.set(name, s)
+    openStream(res, () => { s.waiter?.end(); if (map.get(name) === s) map.delete(name); onClose() })
     sse(res, 'hello', { name, address: `${name}@${host()}`, host: host() })
-    const ping = setInterval(() => res.write(': ping\n\n'), PING_MS)
-    res.on('close', () => { clearInterval(ping); s.waiter?.end(); if (map.get(name) === s) map.delete(name); onClose() })
     return { name, reconnected: !!reconnecting }
   }
 
@@ -114,12 +119,10 @@ export function createSessions({ q, msgRow, tx, now, safe, host }) {
     if (!found) return false
     const [name, s] = found
     s.lastActive = now()                  // the hook waits again at each turn: the session is active
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+    openStream(res, () => { if (s.waiter === res) s.waiter = null })
     if (s.live) { sse(res, 'done', {}); res.end(); return true }   // a channel session is woken by the push itself
     if (s.waiter) { sse(s.waiter, 'done', {}); s.waiter.end() }
     s.waiter = res
-    const ping = setInterval(() => res.write(': ping\n\n'), PING_MS)
-    res.on('close', () => { clearInterval(ping); if (s.waiter === res) s.waiter = null })
     nudge(name)
     return true
   }

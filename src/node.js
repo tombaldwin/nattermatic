@@ -132,7 +132,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   const safe = fn => { try { fn() } catch (e) { log(`internal error: ${errMsg(e)}`) } }
   const hub = createSessions({ q, msgRow, tx, now, safe, host: () => cfg.host })
   const sessions = hub.map
-  const { pump, nudge } = hub
+  const { pump } = hub
 
   // ---------- identity ----------
   const selfAliases = new Set(cfg.aliases)
@@ -489,7 +489,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
 
   // ---------- local API helpers ----------
-  const { authorityFor, askAuthority, remoteLease, localLease } = leaseApi({
+  const { askAuthority, remoteLease, localLease } = leaseApi({
     cfg, leases, sessions, now, isSelf, member, knownPeers,
     routeFor: h => routeFor(h),
     call: (h, m, p, o, opts) => call(h, m, p, o, opts),

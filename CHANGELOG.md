@@ -6,8 +6,8 @@
   database, asking Tailscale its name), a node answers "starting". Clients took that for something
   else on the port: `natter setup` could fail on a machine with Tailscale, and so could a command run
   just as the node started. They now wait for it, for up to 15 seconds. Another machine's node that's
-  starting is no longer reported as "a different machine", and its address isn't set aside for 10
-  minutes.
+  starting is no longer reported as "a different machine" or as unreachable, and its address is
+  tried again after 30 seconds rather than set aside for 10 minutes.
 - **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
   way meanwhile.
 - **Inside:** the node is split into modules with their own state (sessions, invites, other machines,
