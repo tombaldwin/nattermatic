@@ -88,3 +88,12 @@ test('no answer in time: a TimeoutError, with why the machine could not be reach
     assert.ok(m.logs.some(l => /cannot reach b\.test: .*timed out/.test(l)), 'logged as unreachable')
   } finally { m.s.closeAllConnections(); m.s.close() }
 })
+
+test('no time left before asking: a TimeoutError, and the machine is not marked unreachable', async () => {
+  const m = await member((p, res) => reply(res, 200))
+  try {
+    await assert.rejects(m.peers.call(m.host, 'GET', '/v1/sessions', undefined, { deadline: 0 }), TimeoutError)
+    assert.deepEqual(m.asked, [], 'nothing was sent')
+    assert.deepEqual(m.logs, [], 'not logged as unreachable')
+  } finally { m.s.closeAllConnections(); m.s.close() }
+})

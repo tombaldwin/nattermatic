@@ -365,7 +365,7 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
       /** @type {NodeJS.Timeout | undefined} */
       let wait
       const res = await Promise.race([
-        call(to.host, 'POST', '/v1/deliver', { messages: [e] }),
+        call(to.host, 'POST', '/v1/deliver', { messages: [e] }, { deadline: SEND_WAIT_MS }),   // ended, not just left running
         new Promise((_, reject) => { wait = setTimeout(() => reject(new Error('no answer yet')), SEND_WAIT_MS) }),
       ]).finally(() => clearTimeout(wait))
       remote = res.results?.[e.id]

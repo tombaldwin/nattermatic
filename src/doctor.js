@@ -4,7 +4,8 @@
 // gather() collects the facts (files, the running node, Claude Code, Codex); diagnose() judges
 // them. diagnose() is pure, so every verdict can be tested without a machine to break.
 import fs from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import { homeDir, loadConfig, VERSION, cmpVersion, errMsg } from './config.js'
 import { Local, nodeAction } from './local.js'
@@ -70,7 +71,7 @@ export async function gather() {
 async function versionOf(cmd) {
   const p = await askProgram(cmd)
   if (p) return p.version
-  try { return execFileSync(cmd[0], [...cmd.slice(1), 'version'], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().match(/^\d+\.\d+\.\d+\S*$/)?.[0] ?? '' } catch { return '' }
+  try { return (await promisify(execFile)(cmd[0], [...cmd.slice(1), 'version'], { timeout: 3000, encoding: 'utf8' })).stdout.trim().match(/^\d+\.\d+\.\d+\S*$/)?.[0] ?? '' } catch { return '' }
 }
 
 /**

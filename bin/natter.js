@@ -82,6 +82,7 @@ async function main() {
         if (p) {
           const up = async () => { try { const h = await new Local(loadConfig()).health(); return !!h && !('foreign' in h) } catch { return false } }
           const r = await runChosen(p, { onDemand: !!flags['on-demand'], up, log: s => console.error(s) })
+          if (r.stopped) process.exit(0)
           if (r.up || r.code === 0) process.exit(r.code)
           console.error(`it exited (${r.code}) before a node answered; running this one (${VERSION}) instead`)
         }
@@ -98,7 +99,7 @@ async function main() {
           // waited for like one that answers, rather than the service exiting to be restarted over and over
           const who = h ? `another nattermatic node (pid ${h.pid})` : `something that isn't answering (a busy nattermatic node?)`
           if (flags['on-demand']) { console.error(h ? `${who} is already running` : `${who} holds port ${cfg.port}`); return }
-          if (!waited) { console.error(h ? `${who} is running; standing by` : `${who} holds port ${cfg.port}; standing by`); waited = true }
+          if (!waited) { console.error(h ? `${who} is running; standing by` : `${who} holds port ${cfg.port}; standing by (see what it is with \`lsof -nP -iTCP:${cfg.port} -sTCP:LISTEN\`)`); waited = true }
           await new Promise(r => setTimeout(r, 5000))
         }
       }

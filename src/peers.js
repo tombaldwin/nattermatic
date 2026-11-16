@@ -116,8 +116,8 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
    * @param {{ host: string, fp: string, publicKey: import('node:crypto').KeyObject, target: string, method: 'GET'|'POST', path: string, body: string, timeout: number, max: number, until: number, probe: boolean }} o
    */
   async function send({ host, fp, publicKey, target, method, path, body, timeout, max, until, probe }) {
+    const deadline = left(host, until)   // none left is a timeout, not a failure to reach the machine
     try {
-      const deadline = left(host, until)
       const r = await authedRequest({ addr: target, method, path, body, headers: { 'x-agentlink-port': String(cfg.port) }, identity: me, accept: new Map([[fp, publicKey]]), dks: roster.dks, timeout: Math.min(timeout, deadline), deadline }, max)
       if (!probe) noteReach(host, null)
       return r

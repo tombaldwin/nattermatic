@@ -89,20 +89,28 @@ export async function chooseProgram(dir, self, me, ask = askProgram) {
  * stays as its stand-in (launchd and systemd watch it), passing signals on and exiting as it does.
  * Started on demand, it stays until a node answers or that one exits, so whoever started it sees the
  * node. `up` is false if it exited before any node answered: the caller runs its own node instead,
- * so a broken newer install can't leave the machine with none.
+ * so a broken newer install can't leave the machine with none. `stopped`: it was told to stop (and
+ * passed that on), so the caller stops too.
  * @param {Program} p @param {{ onDemand: boolean, up: () => Promise<boolean>, log: (s: string) => void }} o
- * @returns {Promise<{ code: number, up: boolean }>}
+ * @returns {Promise<{ code: number, up: boolean, stopped: boolean }>}
  */
 export function runChosen(p, { onDemand, up, log }) {
   log(`running the node of the newer nattermatic ${p.version} installed at ${key(p.cmd)}`)
   const child = spawn(p.cmd[0], [...p.cmd.slice(1), 'node', '--chosen', ...(onDemand ? ['--on-demand'] : [])], { stdio: 'inherit', env: process.env, detached: onDemand })
   return new Promise(resolve => {
-    let done = false, seen = false
-    const finish = (/** @type {number} */ code) => { if (!done) { done = true; resolve({ code, up: seen }) } }
+    let done = false, seen = false, stopped = false
+    // under the service, a stop is passed on; and this process stops too, rather than running its own node
+    const pass = onDemand ? [] : /** @type {const} */ (['SIGTERM', 'SIGINT', 'SIGHUP']).map(s => /** @type {const} */ ([s, () => { stopped = true; child.kill(s) }]))
+    for (const [s, f] of pass) process.on(s, f)
+    const finish = (/** @type {number} */ code) => {
+      if (done) return
+      done = true
+      for (const [s, f] of pass) process.off(s, f)
+      resolve({ code, up: seen, stopped })
+    }
     child.on('error', e => { log(`couldn't run it: ${errMsg(e)}`); finish(1) })
     child.on('exit', (code, sig) => finish(code ?? (sig ? 1 : 0)))
     if (onDemand) child.unref()
-    else for (const s of /** @type {const} */ (['SIGTERM', 'SIGINT', 'SIGHUP'])) process.on(s, () => child.kill(s))
     ;(async () => {
       for (let i = 0; i < 150 && !done && !seen; i++) {
         if (await up()) { seen = true; if (onDemand) finish(0) } else await new Promise(r => setTimeout(r, 200))

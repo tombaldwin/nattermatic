@@ -243,7 +243,8 @@ export class Local {
       child.on('exit', () => { exited = true })
       child.unref()
     } finally { fs.closeSync(out) }
-    for (let i = 0; i < 60; i++) {
+    // up to 12 s: a node may first ask the other installs here their versions, and run a newer one's (#4)
+    for (let i = 0; i < 120; i++) {
       await sleep(100)
       const h2 = await this.health()
       if (usable(h2)) return h2

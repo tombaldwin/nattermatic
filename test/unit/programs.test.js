@@ -69,15 +69,31 @@ test('the chosen node is run with --chosen; one that dies before any node answer
   try {
     const dies = fake(dir, 'dies', '', 'exit 3')
     const r = await runChosen({ cmd: dies, version: '0.5.2', proto: 2 }, { onDemand: false, up: async () => false, log: () => {} })
-    assert.deepEqual(r, { code: 3, up: false })
+    assert.deepEqual(r, { code: 3, up: false, stopped: false })
     assert.equal(fs.readFileSync(`${dies[0]}.log`, 'utf8').trim(), 'node --chosen')
 
     const runs = fake(dir, 'runs', '', 'sleep 1')
     let calls = 0
     const t0 = Date.now()
     const r2 = await runChosen({ cmd: runs, version: '0.5.2', proto: 2 }, { onDemand: true, up: async () => ++calls > 2, log: () => {} })
-    assert.deepEqual(r2, { code: 0, up: true }, 'on demand: done once a node answers, leaving it running')
+    assert.deepEqual(r2, { code: 0, up: true, stopped: false }, 'on demand: done once a node answers, leaving it running')
     assert.ok(Date.now() - t0 < 5000)
     assert.equal(fs.readFileSync(`${runs[0]}.log`, 'utf8').trim(), 'node --chosen --on-demand')
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('under the service, a stop while the chosen node starts is passed on, and this one stops too', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'natter-programs-'))
+  const before = process.listenerCount('SIGTERM')
+  try {
+    const slow = fake(dir, 'slow', '', 'exec sleep 30')
+    const run = runChosen({ cmd: slow, version: '0.5.2', proto: 2 }, { onDemand: false, up: async () => false, log: () => {} })
+    assert.equal(process.listenerCount('SIGTERM'), before + 1)
+    await new Promise(r => setTimeout(r, 300))
+    process.emit('SIGTERM')
+    const r = await run
+    assert.equal(r.stopped, true, "told to stop: the caller mustn't run its own node")
+    assert.equal(r.up, false)
+    assert.equal(process.listenerCount('SIGTERM'), before, 'its handlers are gone, so a later stop stops this process')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
