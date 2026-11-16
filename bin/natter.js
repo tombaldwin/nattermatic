@@ -11,7 +11,7 @@ const cmd = resolve(first)
 // Only these are flags; anything else (a message that happens to start with "--") is an argument,
 // and "--" ends the flags.
 const VALUE_FLAGS = ['name', 'from', 'host', 'peer', 'join', 'pin', 'net', 'token', 'thread', 'codex', 'pids', 'cwd', 'note', 'minutes', 'max', 'as']
-const BOOL_FLAGS = ['yes', 'force', 'no-service', 'no-claude', 'no-codex', 'no-alias', 'new-network', 'poll', 'channel', 'on-demand', 'revoke', 'list', 'check']
+const BOOL_FLAGS = ['yes', 'force', 'no-service', 'no-claude', 'no-codex', 'no-alias', 'new-network', 'poll', 'channel', 'on-demand', 'chosen', 'json', 'revoke', 'list', 'check']
 /** @type {Record<string, any>} */
 const flags = {}
 /** @type {string[]} */
@@ -71,6 +71,21 @@ async function main() {
       // A node started on demand by a session (--on-demand) just exits: one node is enough.
       // Every attempt re-reads the config and honours `natter uninstall`, so a long-waiting
       // standby never revives an uninstalled node or serves a config that setup has since replaced.
+      // Another nattermatic installed here may be newer (#4): its node runs instead, if it speaks this
+      // protocol. --chosen: this is that node, so it doesn't look again.
+      if (!flags.chosen && !fs.existsSync(path.join(homeDir(), 'disabled'))) {
+        const { noteProgram, chooseProgram, runChosen } = await import('../src/programs.js')
+        const { selfCmd } = await import('../src/claude.js')
+        const { PROTO } = await import('../src/tls.js')
+        noteProgram(homeDir(), selfCmd())
+        const p = await chooseProgram(homeDir(), selfCmd(), { version: VERSION, proto: PROTO })
+        if (p) {
+          const up = async () => { try { const h = await new Local(loadConfig()).health(); return !!h && !('foreign' in h) } catch { return false } }
+          const r = await runChosen(p, { onDemand: !!flags['on-demand'], up, log: s => console.error(s) })
+          if (r.up || r.code === 0) process.exit(r.code)
+          console.error(`it exited (${r.code}) before a node answered; running this one (${VERSION}) instead`)
+        }
+      }
       for (let waited = false; ;) {
         if (fs.existsSync(path.join(homeDir(), 'disabled'))) { console.error('nattermatic is uninstalled on this machine; not starting the node'); return }
         const cfg = loadConfig()
@@ -169,7 +184,11 @@ async function main() {
       const { uninstall } = await import('../src/setup.js')
       return await uninstall()
     }
-    case 'version': return console.log(VERSION)
+    case 'version': {
+      if (!flags.json) return console.log(VERSION)
+      const { PROTO } = await import('../src/tls.js')
+      return console.log(JSON.stringify({ version: VERSION, proto: PROTO }))
+    }
     case 'help': {
       if (!pos.length) return console.log(mainHelp(VERSION))
       const c = findCommand(resolve(pos[0]))

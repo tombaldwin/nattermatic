@@ -69,3 +69,14 @@ test('Codex\'s settings with no codex command on PATH: it says so, not "update C
   assert.match(text, /isn't on this shell's PATH/)
   assert.doesNotMatch(text, /update Codex/)
 })
+
+test('nattermatic installed more than once: each with its version, and which is on PATH', () => {
+  const f = healthy()
+  f.self = '/Applications/nattermatic.app/natter'; f.pathFile = '/usr/local/lib/node_modules/nattermatic/bin/natter.js'
+  f.installs = [{ file: f.pathFile, version: '0.3.1' }]
+  const text = formatFindings(diagnose(f))
+  assert.match(text, /installed more than once[^]*nattermatic\.app\/natter \(\d[^)]*\)[^]*natter\.js \(0\.3\.1\), the natter on PATH/)
+  assert.match(text, /npm uninstall -g nattermatic/)
+  f.installs = []
+  assert.doesNotMatch(formatFindings(diagnose(f)), /more than once/)
+})

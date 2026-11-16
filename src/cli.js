@@ -94,7 +94,7 @@ arrive. Arguments are passed to claude.`,
 bash: add this line to ~/.bashrc:
   eval "$(natter completion bash)"`,
   },
-  { name: 'version', summary: 'print the version' },
+  { name: 'version', args: '[--json]', summary: 'print the version (--json: with the protocol)' },
   { name: 'help', args: '[command]', summary: 'show help for nattermatic or one command' },
   {
     name: 'node', summary: 'run the node (normally run by the background service)', plumbing: true,

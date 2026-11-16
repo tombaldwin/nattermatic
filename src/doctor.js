@@ -4,12 +4,14 @@
 // gather() collects the facts (files, the running node, Claude Code, Codex); diagnose() judges
 // them. diagnose() is pure, so every verdict can be tested without a machine to break.
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { homeDir, loadConfig, VERSION, cmpVersion, errMsg } from './config.js'
 import { Local, nodeAction } from './local.js'
-import { claudeAccounts, claudeBin, isRegistered, wakeSupport, which, WAKE_MIN_CLAUDE } from './claude.js'
+import { claudeAccounts, claudeBin, isRegistered, wakeSupport, which, selfCmd, WAKE_MIN_CLAUDE } from './claude.js'
 import { canQueue, codexConfigFile, codexPresent, withoutBlock } from './codex.js'
 import { oldHome } from './legacy.js'
+import { listPrograms, askProgram } from './programs.js'
 
 /**
  * @typedef {{
@@ -19,6 +21,7 @@ import { oldHome } from './legacy.js'
  *   claude?: { found: boolean, version: string, accounts: { alias: string, registered: boolean }[] },
  *   codex?: { present: boolean, onPath?: boolean, configured: boolean, wakes: boolean },
  *   onPath: boolean, oldHome: boolean, oldCli: string, platform: string,
+ *   self?: string, pathFile?: string, installs?: { file: string, version: string }[],
  * }} Facts
  * @typedef {{ level: 'ok' | 'warn' | 'fail', text: string, fix?: string }} Finding
  */
@@ -30,6 +33,14 @@ export async function gather() {
   /** @type {Facts} */
   const f = { onPath: !!which('natter'), oldHome: !!old && !old.isSymbolicLink(), oldCli: oldCliPath(), platform: process.platform }
   f.disabled = fs.existsSync(path.join(homeDir(), 'disabled'))
+  // other installs of nattermatic here, each asked its version (#4)
+  const real = (/** @type {string | null} */ p) => { try { return p ? fs.realpathSync(p) : '' } catch { return '' } }
+  f.self = real(selfCmd().at(-1) ?? '')
+  f.pathFile = real(which('natter'))
+  const others = listPrograms(homeDir()).filter(c => real(c.at(-1) ?? '') && real(c.at(-1) ?? '') !== f.self)
+  // the natter on PATH too: an install older than this check never notes itself
+  if (f.pathFile && f.pathFile !== f.self && !others.some(c => real(c.at(-1) ?? '') === f.pathFile)) others.push([f.pathFile])
+  f.installs = await Promise.all(others.map(async c => ({ file: real(c.at(-1) ?? ''), version: await versionOf(c) })))
   let cfg
   try { cfg = loadConfig() } catch (e) { f.setupError = errMsg(e) }
   if (cfg) {
@@ -53,6 +64,13 @@ export async function gather() {
     f.codex = { present: true, onPath: !!codex, configured: withoutBlock(text) !== text, wakes: canQueue(codex) }
   } else f.codex = { present: false, onPath: false, configured: false, wakes: false }
   return f
+}
+
+/** A program's version: asked as a node start asks it, or from `version` for one older than that. @param {string[]} cmd */
+async function versionOf(cmd) {
+  const p = await askProgram(cmd)
+  if (p) return p.version
+  try { return execFileSync(cmd[0], [...cmd.slice(1), 'version'], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().match(/^\d+\.\d+\.\d+\S*$/)?.[0] ?? '' } catch { return '' }
 }
 
 /**
@@ -140,6 +158,13 @@ export function diagnose(f) {
     else if (x.onPath === false) warn('Codex\'s settings are here, but the codex command isn\'t on this shell\'s PATH, so it couldn\'t be checked', 'run `natter doctor` from a shell where `codex` works')
     else if (!x.wakes) warn('Codex is set up, but this Codex can\'t be woken by messages (it needs `codex queue`)', 'update Codex, then run `natter setup`')
     else ok('Codex is set up and can be woken')
+  }
+
+  // more than one install (#4)
+  if (f.installs?.length) {
+    const list = [{ file: f.self ?? '', version: VERSION }, ...f.installs]
+      .map(i => `${i.file} (${i.version || 'version not known'})${i.file === f.pathFile ? ', the natter on PATH' : ''}`)
+    warn(`nattermatic is installed more than once here: ${list.join('; ')}`, 'keep one and remove the others (an npm install with `npm uninstall -g nattermatic`): an install from before 0.4.2 can still start its own, older node')
   }
 
   // leftovers from before the rename

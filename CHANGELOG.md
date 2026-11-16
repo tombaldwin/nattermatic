@@ -8,6 +8,12 @@
   just as the node started. They now wait for it, for up to 15 seconds. Another machine's node that's
   starting is no longer reported as "a different machine" or as unreachable, and its address is
   tried again after 30 seconds rather than set aside for 10 minutes.
+- **More than one install on a machine** (the app, and an older npm `natter` still on the PATH, say):
+  whichever starts the node, it's now the newest install that speaks the same protocol, so an older
+  install no longer starts an older node for a newer one to replace. Each install is asked its version
+  when a node starts. `natter doctor` lists the installs, with their versions and which `natter` is on
+  the PATH. It works between installs of this version and later ones: an install older than this one
+  doesn't know to look, so remove it (doctor says which).
 - **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
   way meanwhile.
 - **Inside:** the node is split into modules with their own state (sessions, invites, other machines,

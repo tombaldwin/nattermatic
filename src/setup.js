@@ -15,6 +15,7 @@ import { openStore } from './store.js'
 import { appBundle, SEA } from './self.js'
 import { codexPresent, installCodex, removeCodex, codexConfigFile } from './codex.js'
 import { moveOldHome, removeOldService, removeOldApp } from './legacy.js'
+import { noteProgram } from './programs.js'
 import { claudeAccounts, register, unregister, writeShellBlock, removeShellBlock, primaryRc, claudeBin, selfCmd, checkAdapter, wakeSupport, WAKE_MIN_CLAUDE } from './claude.js'
 
 /**
@@ -387,6 +388,7 @@ function registerClaude() {
 // ---------- services ----------
 function installService() {
   const cfgDir = ensureHomeDir()
+  noteProgram(cfgDir, selfCmd())     // so a node an older install starts is this one's (#4)
   const { label: LABEL, unit: UNIT } = serviceNames()
   const logFile = path.join(cfgDir, 'node.log')
   // the service starts with this user's real home, whatever this run's is
