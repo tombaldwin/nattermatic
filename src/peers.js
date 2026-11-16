@@ -4,7 +4,7 @@
 // Addresses come from beacons, from requests members send us, from what other members tell us, and
 // from configured names; each is a hint until a handshake there verifies it.
 import { authedRequest, PinError, ProtoError, StartingError, MAX_BODY as MAX_REQ, MIN_RATE } from './tls.js'
-import { PeerAnswered } from './errors.js'
+import { PeerAnswered, TimeoutError } from './errors.js'
 import { normHost, validAddr, errMsg, netHint, VERSION } from './config.js'
 
 const MAX_REPLY = 1 << 20              // a reply to anything but a hello: only a hello carries a roster
@@ -75,23 +75,52 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
    * Request to another member. The machine at the address must prove it holds that member's key
    * before we say who we are or send the request: anyone else gets nothing.
    * `addr` dials an explicit, not yet verified address instead of the stored route for `host`.
+   * A member that hasn't heard we joined yet answers 403: it's told (a hello carries the records that
+   * add us) and asked once more, all within the one request's time.
    * @param {string} host
    * @param {'GET'|'POST'} method
    * @param {string} p
    * @param {object} [obj]
-   * @param {{ timeout?: number, addr?: string, retried?: boolean, deadline?: number }} [opts]
+   * @param {{ timeout?: number, addr?: string, deadline?: number }} [opts]
+   *   timeout: how long a silence is waited out; deadline: ms the whole request may take
    * @returns {Promise<any>}
    */
-  async function call(host, method, p, obj, { timeout = 4000, addr, retried = false, deadline } = {}) {
+  async function call(host, method, p, obj, { timeout = 4000, addr, deadline } = {}) {
     const m = member(host)
     if (!m) throw new Error(notMember(host))
     const body = obj === undefined ? '' : JSON.stringify(obj)
     timeout += Math.ceil(Buffer.byteLength(body) / MIN_RATE)   // big batches on slow links still finish
     const target = addr || addrOf(host)
     if (!validAddr(target)) throw new Error(`invalid address for ${host}: ${target}`)
-    let r
+    const max = p === '/v1/hello' ? MAX_REQ : MAX_REPLY
+    const until = Date.now() + (deadline ?? 3 * timeout + max / MIN_RATE)
+    const req = { host, fp: m.fp, publicKey: m.publicKey, target, method, path: p, body, timeout, max, until, probe: !!addr }
+    let r = await send(req)
+    if (r.status === 403 && p !== '/v1/hello') {
+      await call(host, 'POST', '/v1/hello', helloBody(), { timeout: 2500, addr, deadline: left(host, until) })
+      r = await send(req)
+    }
+    return answer(host, r)
+  }
+
+  /** What's left of a request's time, or a TimeoutError if none is. @param {string} host @param {number} until */
+  function left(host, until) {
+    const ms = until - Date.now()
+    if (ms <= 0) throw new TimeoutError(`${host}: timed out`)
+    return ms
+  }
+
+  /**
+   * One exchange with a member, noting whether it could be reached (unless it was a probe of an
+   * address not yet verified: that says nothing about the machine).
+   * @param {{ host: string, fp: string, publicKey: import('node:crypto').KeyObject, target: string, method: 'GET'|'POST', path: string, body: string, timeout: number, max: number, until: number, probe: boolean }} o
+   */
+  async function send({ host, fp, publicKey, target, method, path, body, timeout, max, until, probe }) {
     try {
-      r = await authedRequest({ addr: target, method, path: p, body, headers: { 'x-agentlink-port': String(cfg.port) }, identity: me, accept: new Map([[m.fp, m.publicKey]]), dks: roster.dks, timeout, deadline }, p === '/v1/hello' ? MAX_REQ : MAX_REPLY)
+      const deadline = left(host, until)
+      const r = await authedRequest({ addr: target, method, path, body, headers: { 'x-agentlink-port': String(cfg.port) }, identity: me, accept: new Map([[fp, publicKey]]), dks: roster.dks, timeout: Math.min(timeout, deadline), deadline }, max)
+      if (!probe) noteReach(host, null)
+      return r
     } catch (e) {
       // its node is starting (unproved): not unreachable, and not to be logged as if it were
       if (e instanceof StartingError) throw Object.assign(new StartingError(`${host} at ${target}: its node is starting`), { reason: `${target}: its node is starting` })
@@ -99,15 +128,15 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
       const reason = e instanceof PinError ? `${target} is answered by a different machine (not ${host}'s key)`
         : e instanceof ProtoError ? e.message
         : `${target}: ${errMsg(e)}${netHint(e)}`
-      if (!addr) noteReach(host, reason)   // a probe of an unverified address says nothing about the machine
-      throw Object.assign(new Error(e instanceof ProtoError ? `${host}: ${reason}` : `${host} at ${reason}`), { reason })
+      if (!probe) noteReach(host, reason)
+      // no cause: errMsg would add the connection's details a second time
+      const Kind = e instanceof TimeoutError ? TimeoutError : Error
+      throw Object.assign(new Kind(e instanceof ProtoError ? `${host}: ${reason}` : `${host} at ${reason}`), { reason })
     }
-    if (!addr) noteReach(host, null)
-    // a member that hasn't heard we joined yet: tell it (hello carries the records that add us), then retry
-    if (r.status === 403 && p !== '/v1/hello' && !retried) {
-      await call(host, 'POST', '/v1/hello', helloBody(), { timeout: 2500, addr })
-      return call(host, method, p, obj, { timeout, addr, retried: true, deadline })
-    }
+  }
+
+  /** A member's answer: its data, or PeerAnswered for an error status. @param {string} host @param {{ status: number, text: string }} r */
+  function answer(host, r) {
     /** @type {any} */
     let data = {}
     try { data = r.text ? JSON.parse(r.text) : {} } catch { throw new Error(`${host}: bad reply`) }

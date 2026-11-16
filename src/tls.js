@@ -15,6 +15,7 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import { fingerprint } from './cert.js'
 import { gateTags, proveAuth, checkAuth } from './crypto.js'
+import { TimeoutError } from './errors.js'
 
 /** Split "host:port" / "[v6]:port". @param {string} addr */
 function splitAddr(addr) {
@@ -116,7 +117,7 @@ export async function authedRaw(o) {
       // silently dropped connect would wait out the OS's limit (over a minute)
       const signal = o.signal ? AbortSignal.any([o.signal, first.signal]) : first.signal
       const req = https.request({ ...base, signal, method: 'GET', path: '/v1/auth', headers: { 'x-agentlink-proto': String(PROTO) }, timeout: o.timeout || 4000 }, resolve)
-      req.on('timeout', () => req.destroy(new Error('timed out')))
+      req.on('timeout', () => req.destroy(new TimeoutError()))
       req.on('error', e => reject(mapErr(e)))
       req.on('socket', s => {
         const t = /** @type {tls.TLSSocket} */ (s)
@@ -148,7 +149,7 @@ export async function authedRaw(o) {
         ...base, signal: o.signal, method: o.method || 'GET', path: o.path,
         headers: { ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}), ...o.headers, 'x-agentlink-auth': proof },
       }, resolve)
-      req.setTimeout(o.timeout ?? 4000, () => req.destroy(new Error('timed out')))
+      req.setTimeout(o.timeout ?? 4000, () => req.destroy(new TimeoutError()))
       req.on('error', e => reject(mapErr(e)))
       // nothing is written until the request has the connection the server proved itself on
       req.on('socket', s => { if (s === sock) req.end(body); else req.destroy(new PinError('the connection was replaced before the request was sent')) })
@@ -158,7 +159,7 @@ export async function authedRaw(o) {
   } catch (e) {
     clearTimeout(limit)
     agent.destroy()
-    throw first.signal.aborted ? new Error('timed out') : e
+    throw first.signal.aborted ? new TimeoutError() : e
   }
 }
 
@@ -174,10 +175,10 @@ export async function authedRequest(o, max = MAX_BODY) {
   try {
     const { res, peerFp } = await authedRaw({ ...o, signal: o.signal ? AbortSignal.any([o.signal, whole.signal]) : whole.signal })
     const text = await readAll(res, max)
-    if (whole.signal.aborted) throw new Error('timed out')     // a body with no length just stops: that isn't its end
+    if (whole.signal.aborted) throw new TimeoutError()     // a body with no length just stops: that isn't its end
     return { status: res.statusCode || 0, text, peerFp }
   } catch (e) {
-    throw whole.signal.aborted ? new Error('timed out') : e
+    throw whole.signal.aborted ? new TimeoutError() : e
   } finally { clearTimeout(limit) }
 }
 
@@ -207,7 +208,7 @@ export async function pinnedRequest(o, max = MAX_BODY) {
         return notExpected()
       },
     }, resolve)
-    req.on('timeout', () => req.destroy(new Error('timed out')))
+    req.on('timeout', () => req.destroy(new TimeoutError()))
     req.on('error', e => {
       const code = /** @type {any} */ (e).code
       // a server whose certificate isn't one of ours fails CA validation before the identity check
@@ -233,7 +234,7 @@ export function peerCertificate(addr, timeout = 5000) {
       if (!x) return reject(new Error(`${addr} presented no certificate`))
       resolve({ pem: x.toString(), fp: fingerprint(x) })
     })
-    sock.setTimeout(timeout, () => sock.destroy(new Error(`timed out connecting to ${addr}`)))
+    sock.setTimeout(timeout, () => sock.destroy(new TimeoutError(`timed out connecting to ${addr}`)))
     sock.on('error', reject)
   })
 }

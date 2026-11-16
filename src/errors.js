@@ -15,3 +15,9 @@ export class PeerAnswered extends Error {
     this.peerStatus = status
   }
 }
+
+/** A request to another machine ran out of time: no answer, or not all of it, within its limit. */
+export class TimeoutError extends Error {
+  /** @param {string} [message] @param {ErrorOptions} [options] */
+  constructor(message = 'timed out', options) { super(message, options) }
+}

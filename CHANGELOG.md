@@ -28,6 +28,9 @@
   given the same name later can tell the notice wasn't for it.
 - **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
   way meanwhile.
+- **Fix:** a request to a machine that hadn't yet heard this one joined (it's told, then asked again)
+  could take twice its time limit, or more, to give up on a slow machine. Telling it and asking again
+  now share the one limit.
 - **Inside:** the node is split into modules with their own state (sessions, invites, other machines,
   messages on their way, lease requests, database statements). A message's moves from state to state are defined in one
   table, and a test checks every statement against it.
