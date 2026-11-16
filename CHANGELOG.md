@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **A node that's starting is waited for.** From binding its port until it's ready (reading its
+  database, asking Tailscale its name), a node answers "starting". Clients took that for something
+  else on the port: `natter setup` could fail on a machine with Tailscale, and so could a command run
+  just as the node started. They now wait for it, for up to 15 seconds. Another machine's node that's
+  starting is no longer reported as "a different machine", and its address isn't set aside for 10
+  minutes.
+- **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
+  way meanwhile.
+- **Inside:** the node is split into modules with their own state (sessions, invites, other machines,
+  lease requests, database statements). A message's moves from state to state are defined in one
+  table, and a test checks every statement against it.
+
 ## 0.4.1 — 2026-11-15
 
 - **`natter doctor`** checks this machine's setup end to end: the node, each machine on the network

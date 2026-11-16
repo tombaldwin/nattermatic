@@ -24,6 +24,11 @@ function splitAddr(addr) {
 }
 
 export class PinError extends Error {}
+/**
+ * The node at the address says it's still starting (it answers every request that way until it's
+ * ready). Unproved, like anything before the identity check: believing it only means waiting a little.
+ */
+export class StartingError extends Error {}
 /** The other machine speaks a different version of the protocol. */
 export class ProtoError extends Error {
   /** @param {number} theirs */
@@ -126,6 +131,7 @@ export async function authedRaw(o) {
     /** @type {any} */
     let who = null
     try { who = JSON.parse(text) } catch {}
+    if (r1.statusCode === 503 && who?.error === 'starting') throw new StartingError('its node is starting')
     // a member of our network running another version (the claim is only used for the message)
     if (r1.statusCode === 200 && Number.isSafeInteger(who?.proto) && who.proto !== PROTO && !o.anyProto) throw new ProtoError(who.proto)
     const key = r1.statusCode === 200 && typeof who?.fp === 'string' ? o.accept.get(who.fp) : undefined

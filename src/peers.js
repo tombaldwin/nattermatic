@@ -3,7 +3,7 @@
 // An address is used for a member only once the machine there proves it holds that member's key.
 // Addresses come from beacons, from requests members send us, from what other members tell us, and
 // from configured names; each is a hint until a handshake there verifies it.
-import { authedRequest, PinError, ProtoError, MAX_BODY as MAX_REQ, MIN_RATE } from './tls.js'
+import { authedRequest, PinError, ProtoError, StartingError, MAX_BODY as MAX_REQ, MIN_RATE } from './tls.js'
 import { PeerAnswered } from './errors.js'
 import { normHost, validAddr, errMsg, netHint, VERSION } from './config.js'
 
@@ -182,7 +182,10 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
         noteVersion(host, data.version)
         log(`${host} is at ${addr}`)
         if (q.wake.run(host).changes) kick()
-      } catch { probeFailed.set(key, now()) } finally { probing.delete(key) }
+      } catch (e) {
+        // a node still starting hasn't failed the check: it can be tried again at the next sighting
+        if (!(e instanceof StartingError)) probeFailed.set(key, now())
+      } finally { probing.delete(key) }
       // forget the oldest failures, never all of them: clearing them would end the throttle under a flood
       if (probeFailed.size > 1000) for (const k of [...probeFailed.keys()].slice(0, probeFailed.size - 1000)) probeFailed.delete(k)
     } catch (e) { log('probe error', errMsg(e)) }

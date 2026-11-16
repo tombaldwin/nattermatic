@@ -8,11 +8,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
-import { authedRequest, authedRaw, PinError, PROTO } from './tls.js'
+import { authedRequest, authedRaw, PinError, StartingError, PROTO } from './tls.js'
 import { cmpVersion, ensureHomeDir, errMsg, readIdentity, rosterPath, sleep, VERSION } from './config.js'
 import { Roster } from './roster.js'
 import { selfCmd } from './claude.js'
 
+const STARTING_WAIT_MS = 15_000   // how long a node may say it's starting before it's taken for absent
 const MAX_LOCAL_REPLY = 64 << 20   // the most an inbox read can come to: 100 messages of 64 KB, escaped
 
 /**
@@ -95,8 +96,24 @@ export class Local {
   // anyProto: after an upgrade the running node may be the previous version; setup must still reach it to stop it
   opts(o) { return { addr: this.addr, identity: this.cfg.identity, accept: this.accept, dks: readDks(this.cfg.dir), anyProto: true, ...o } }
 
+  /**
+   * `fn`, again every 200 ms while the node says it's still starting (from binding the port until
+   * it's ready: reading its database, asking Tailscale its name). A node starting up is neither
+   * absent nor something else on the port.
+   * @template T @param {() => Promise<T>} fn @returns {Promise<T>}
+   */
+  async whenStarted(fn) {
+    for (const until = Date.now() + STARTING_WAIT_MS; ;) {
+      try { return await fn() } catch (e) {
+        if (!(e instanceof StartingError) || Date.now() >= until) throw e
+        await sleep(200)
+      }
+    }
+  }
+
   /** @param {unknown} e */
   wrap(e) {
+    if (e instanceof StartingError) return new Error(`the nattermatic node on port ${this.cfg.port} is still starting: try again in a moment`)
     if (e instanceof PinError || /** @type {any} */ (e)?.code === 'EPROTO') return new Error(`port ${this.cfg.port} is not answered by this machine's nattermatic node`)
     return new Error(`cannot reach the nattermatic node on port ${this.cfg.port}: ${errMsg(e)}`)
   }
@@ -110,7 +127,7 @@ export class Local {
    */
   async req(method, p, obj, query = '', timeout = 15_000) {
     let r
-    const send = () => authedRequest(this.opts({ method, path: p + query, body: obj === undefined ? '' : JSON.stringify(obj), timeout }), MAX_LOCAL_REPLY)
+    const send = () => this.whenStarted(() => authedRequest(this.opts({ method, path: p + query, body: obj === undefined ? '' : JSON.stringify(obj), timeout }), MAX_LOCAL_REPLY))
     try {
       r = await send()
     } catch (e) {
@@ -139,7 +156,7 @@ export class Local {
   /** @returns {Promise<import('./types.js').Health | { foreign: true } | null>} */
   async health1() {
     try {
-      const r = await authedRequest(this.opts({ path: '/health', timeout: 1000 }))
+      const r = await this.whenStarted(() => authedRequest(this.opts({ path: '/health', timeout: 1000 })))
       return r.status === 200 ? JSON.parse(r.text) : { foreign: true }
     } catch (e) {
       return e instanceof PinError || /** @type {any} */ (e)?.code === 'EPROTO' ? { foreign: true } : null
