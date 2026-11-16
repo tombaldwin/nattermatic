@@ -15,20 +15,22 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { openStore, queries } from './store.js'
 import { startDiscovery } from './discovery.js'
-import { signEnvelope, verifyEnvelope, sha256, randomToken, gateOk, proveAuth, checkAuth } from './crypto.js'
-import { fingerprint, shortFp, newIdentity, selfSignedCert } from './cert.js'
+import { signEnvelope, verifyEnvelope, gateOk, proveAuth, checkAuth } from './crypto.js'
+import { fingerprint, shortFp, newIdentity } from './cert.js'
 import { Roster, MAX_ROSTER_BYTES } from './roster.js'
-import { authedRequest, exporterOf, PinError, ProtoError, PROTO, MAX_BODY as MAX_REQ, MIN_RATE } from './tls.js'
+import { exporterOf, PROTO, MAX_BODY as MAX_REQ } from './tls.js'
 import { SEA, PKG_ROOT, readAsset, appBundle } from './self.js'
 import { renameOldDb } from './legacy.js'
-import { httpErr, PeerAnswered } from './errors.js'
+import { httpErr } from './errors.js'
 import { leaseApi } from './lease-api.js'
+import { createSessions } from './sessions.js'
+import { createInvites } from './invites.js'
+import { createPeers, HELLO_CONCURRENCY } from './peers.js'
 import { createLeases, sessionId } from './leases.js'
-import { parseAddr, parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleNameAsync, localIPv4s, errMsg, netHint, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
+import { parseAddr, parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleNameAsync, localIPv4s, errMsg, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
 
 const MAX_JOIN_REQ = 16 << 10          // a join request (before any identity check) is small
 const MAX_JOIN_CHAIN = 4               // add records an unknown client may submit (it, whoever added it, ...)
-const MAX_REPLY = 1 << 20              // a reply to anything but a hello: only a hello carries a roster
 const MAX_BATCH = 256 << 10            // bytes of envelopes per request (well under MAX_REQ)
 const MAX_MSG = 64 * 1024
 const BACKOFF_MAX = 60_000
@@ -36,14 +38,9 @@ const HELLO_EVERY = 120_000
 const REPLICATE_TO = 3                 // max other nodes that hold a copy for an offline machine
 const PEER_FORGET_MS = 30 * 86400_000
 const IN_FLIGHT_MS = 30_000            // a send being delivered directly is hidden from the flush loop
-const PROBE_RETRY_MS = 10 * 60_000     // don't re-probe an address that just failed verification
-const HELLO_CONCURRENCY = 2            // offline .local names tie up a DNS (libuv) thread each for seconds
 const FLUSH_HOSTS = 8                  // machines being delivered to at once
-const PUMP_WINDOW = 256                // messages a session may hold unacknowledged: the rest wait here
-const PUMP_BUFFER = 1 << 20            // bytes waiting for a session to read before we stop writing
 const PEERS_WAIT_MS = 5000             // `peers` answers by then: a machine that slow counts as offline
 const CLOCK_SLACK_MS = 86400_000       // how far ahead of us a sender's clock can put a message's expiry
-const INVITE_TTL_MS = 24 * 3600_000
 const SEND_WAIT_MS = 10_000            // a send answers by then: it's stored, and clients stop waiting at 15 s
 const COMPACT_WAIT_MS = 100_000        // to catch up before a snapshot: the command waits a little longer
 const MAX_LOG = 10 << 20               // node.log is cut back to its last MB past this
@@ -108,68 +105,13 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     cfg.host = rosterName
   }
   if (!roster.members.has(me.fp)) log(roster.removed.has(me.fp) ? 'this machine has been removed from the network' : 'this machine is not (yet) a member of its network')
-  /** @type {Map<string, { res: Res, sent: Set<string>, token: string, live: boolean, owner: number, cwd: string, notified: Set<string>, waiter: Res | null, more: boolean, draining: boolean, lastActive: number }>} name -> session stream (live: woken by channel pushes; sent: offered, not yet acknowledged) */
-  const sessions = new Map()
 
   const q = queries(db)
 
 
-  // ---------- the certificate we present ----------
-  // While an invite is open, the invite key (the one its curl line pins; shared by all open invites,
-  // kept across restarts, replaced once none are open). Otherwise a fresh key for each connection,
-  // or at most each second (key generation costs about a millisecond).
-  const inviteKeyPath = path.join(cfg.dir, 'invite.key')
-  /** @type {{ key: string, cert: string, fp: string } | null} */
-  let invite = null
-  /** The invite key if any invite is open (deleted once none is). */
-  function inviteIdentity() {
-    if (!q.openInvite.get(now())) {
-      if (invite || fs.existsSync(inviteKeyPath)) { fs.rmSync(inviteKeyPath, { force: true }); invite = null }
-      return null
-    }
-    if (!invite) {
-      try {
-        const key = fs.readFileSync(inviteKeyPath, 'utf8'), k = crypto.createPrivateKey(key)
-        invite = { key, cert: selfSignedCert(k), fp: fingerprint(k) }
-      } catch {}
-    }
-    return invite
-  }
-  let presenting = '', rotatedAt = 0
-  /** @type {NodeJS.Timeout | null} */
-  let rotateTimer = null
-  rotate = () => {
-    let inv = null
-    try { inv = inviteIdentity() } catch (e) { log('invite key:', errMsg(e)) }
-    if (inv) {
-      if (presenting !== inv.fp) { server.setSecureContext(tlsOpts(inv)); presenting = inv.fp }
-      return
-    }
-    // the current key has just been shown: replace it now, or once a second has passed since the last
-    // replacement, so no two connections a second or more apart ever see the same key
-    const wait = presenting === 'throwaway' ? 1000 - (now() - rotatedAt) : 0
-    if (wait > 0) {
-      rotateTimer ||= setTimeout(() => { rotateTimer = null; rotate() }, wait)
-      rotateTimer.unref()
-      return
-    }
-    server.setSecureContext(tlsOpts(newIdentity()))
-    presenting = 'throwaway'
-    rotatedAt = now()
-  }
-  /** A new invite token; makes the invite key if none is open. */
-  function newInvite() {
-    if (!inviteIdentity()) {
-      const id = newIdentity()
-      fs.writeFileSync(inviteKeyPath, id.key, { mode: 0o600 })
-      invite = id
-    }
-    const inv = /** @type {{ key: string, cert: string, fp: string }} */ (invite)
-    const token = randomToken()
-    q.addInvite.run(sha256(token), now(), now() + INVITE_TTL_MS)
-    rotate()
-    return { token, fp: inv.fp }
-  }
+  // ---------- the certificate we present (see invites.js) ----------
+  const invites = createInvites({ present: id => server.setSecureContext(tlsOpts(id)), q, dir: cfg.dir, now, log })
+  rotate = invites.rotate
   rotate()
 
   // typed views of the rows node:sqlite returns
@@ -188,6 +130,9 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   if (!process.listenerCount('unhandledRejection')) process.on('unhandledRejection', e => log(`internal error (unhandled): ${errMsg(e)}`))
   /** Run a callback from a timer or an event: a failure (a database error, say) is logged, not a crash. @param {() => unknown} fn */
   const safe = fn => { try { fn() } catch (e) { log(`internal error: ${errMsg(e)}`) } }
+  const hub = createSessions({ q, msgRow, tx, now, safe, host: () => cfg.host })
+  const sessions = hub.map
+  const { pump, nudge } = hub
 
   // ---------- identity ----------
   const selfAliases = new Set(cfg.aliases)
@@ -210,7 +155,6 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   const isSelf = (/** @type {string} */ h) => h === cfg.host || selfAliases.has(h)
   /** A current member other than this machine, by name. @param {string} host */
   const member = host => { const m = roster.byHost.get(host); return m && m.fp !== me.fp ? m : undefined }
-  const otherMembers = () => [...roster.members.values()].filter(m => m.fp !== me.fp)
   let leaseBusy = false
   const leases = createLeases({
     db, host: () => cfg.host, dir: cfg.dir, sessions, log,
@@ -255,222 +199,12 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     if (bad.changes) log(`dropped ${bad.changes} stored message(s) with invalid timestamps`)
   }
 
-  // ---------- peers ----------
-  const addrOf = (/** @type {string} */ host) => cfg.routes[host] || peerRow(host)?.addr || `${host}:${cfg.port}`
-  const helloBody = () => ({ peers: shareablePeers(), records: roster.records, version: VERSION })
-  /**
-   * The version a member says it runs. Only from that member's own hello (request or reply), whose
-   * sender proved its key: what one machine says about another's version is never taken.
-   * @param {string} host @param {unknown} v
-   */
-  function noteVersion(host, v) {
-    if (typeof v !== 'string' || !/^\d{1,5}\.\d{1,5}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,20})?$/.test(v) || !member(host) || host === cfg.host) return
-    if (peerRow(host)?.version !== v) q.setVersion.run(host, now(), v)
-  }
-
-  /**
-   * Request to another member. The machine at the address must prove it holds that member's key
-   * before we say who we are or send the request: anyone else gets nothing.
-   * `addr` dials an explicit, not yet verified address instead of the stored route for `host`.
-   * @param {string} host
-   * @param {'GET'|'POST'} method
-   * @param {string} p
-   * @param {object} [obj]
-   * @param {{ timeout?: number, addr?: string, retried?: boolean, deadline?: number }} [opts]
-   * @returns {Promise<any>}
-   */
-  async function call(host, method, p, obj, { timeout = 4000, addr, retried = false, deadline } = {}) {
-    const m = member(host)
-    if (!m) throw new Error(notMember(host))
-    const body = obj === undefined ? '' : JSON.stringify(obj)
-    timeout += Math.ceil(Buffer.byteLength(body) / MIN_RATE)   // big batches on slow links still finish
-    const target = addr || addrOf(host)
-    if (!validAddr(target)) throw new Error(`invalid address for ${host}: ${target}`)
-    let r
-    try {
-      r = await authedRequest({ addr: target, method, path: p, body, headers: { 'x-agentlink-port': String(cfg.port) }, identity: me, accept: new Map([[m.fp, m.publicKey]]), dks: roster.dks, timeout, deadline }, p === '/v1/hello' ? MAX_REQ : MAX_REPLY)
-    } catch (e) {
-      // reason: why the machine can't be reached, without its name (peers shows it next to the name)
-      const reason = e instanceof PinError ? `${target} is answered by a different machine (not ${host}'s key)`
-        : e instanceof ProtoError ? e.message
-        : `${target}: ${errMsg(e)}${netHint(e)}`
-      if (!addr) noteReach(host, reason)   // a probe of an unverified address says nothing about the machine
-      throw Object.assign(new Error(e instanceof ProtoError ? `${host}: ${reason}` : `${host} at ${reason}`), { reason })
-    }
-    if (!addr) noteReach(host, null)
-    // a member that hasn't heard we joined yet: tell it (hello carries the records that add us), then retry
-    if (r.status === 403 && p !== '/v1/hello' && !retried) {
-      await call(host, 'POST', '/v1/hello', helloBody(), { timeout: 2500, addr })
-      return call(host, method, p, obj, { timeout, addr, retried: true, deadline })
-    }
-    /** @type {any} */
-    let data = {}
-    try { data = r.text ? JSON.parse(r.text) : {} } catch { throw new Error(`${host}: bad reply`) }
-    // only the status: what another machine writes here would reach sessions and terminals as our own words
-    if (r.status < 200 || r.status >= 300) throw new PeerAnswered(host, r.status)
-    q.upsertPeer.run(host, null, now(), 0)
-    if (data.records) mergeRoster(data.records)
-    return data
-  }
-  /** Why `host` can't be sent to. @param {string} host */
-  const notMember = host => removedHost(host) ? `${host} was removed from the network` : `${host} is not a known machine on this network (yet)`
-
-  /**
-   * Which machine answers at `addr`? Any member is accepted (including us); returns that
-   * member, or throws. Used for names that aren't member names: IPs, Tailscale names, configured peers.
-   * @param {string} addr
-   */
-  async function identify(addr, timeout = 2500) {
-    if (!validAddr(addr)) throw new Error(`invalid address ${addr}`)
-    const accept = new Map([...roster.members.values()].map(m => [m.fp, m.publicKey]))
-    let r
-    try {
-      r = await authedRequest({ addr, method: 'POST', path: '/v1/hello', body: JSON.stringify(helloBody()), headers: { 'x-agentlink-port': String(cfg.port) }, identity: me, accept, dks: roster.dks, timeout }, MAX_REQ)
-    } catch (e) { throw new Error(e instanceof PinError ? `${addr}: not a machine on this network` : `${addr}: ${errMsg(e)}`) }
-    const m = roster.members.get(r.peerFp)
-    if (!m) throw new Error(`${addr}: not a machine on this network`)
-    if (r.status === 200 && m.fp !== me.fp) { try { const d = JSON.parse(r.text); mergeRoster(d.records); learnPeers(d.peers); noteVersion(m.host, d.version) } catch {} }
-    return m
-  }
-
-  /**
-   * Work out which member a non-member name (IP, Tailscale name, configured peer) refers to, and
-   * remember it. Returns the member's host (cfg.host if it's us), or null.
-   * @param {string} name
-   */
-  async function resolveName(name) {
-    const real = peerRow(name)?.alias_of
-    if (real && (member(real) || real === cfg.host)) return real
-    const addr = addrOf(name)
-    let m
-    try { m = await identify(addr) } catch { return null }
-    if (m.fp === me.fp) return adoptSelfAlias(name) ? cfg.host : null
-    q.upsertPeer.run(name, addr, now(), 0)
-    q.setAlias.run(m.host, name)
-    if (!cfg.routes[m.host]) q.upsertPeer.run(m.host, addr, now(), 0)
-    log(`${name} is ${m.host}`)
-    return m.host
-  }
-
-  const probing = new Set()
-  const MAX_PROBES = 8, MAX_PROBES_PER_HOST = 2
-  /** @type {Map<string, number>} "host addr" -> when verification last failed */
-  const probeFailed = new Map()
-  /**
-   * Start routing member `host` to `addr`, but only once the machine there proves it holds its key.
-   * @param {string} host @param {string} addr @param {{ refresh?: boolean }} [opts] refresh: a fresh sighting (beacon, request)
-   */
-  async function probe(host, addr, { refresh = true } = {}) {
-    if (!validAddr(addr) || isSelf(host) || !member(host)) return
-    const key = `${host} ${addr}`
-    try {   // nothing awaits this, so a failed write here (a full disk) must stop here too
-      const cur = peerRow(host)
-      if (cur?.addr === addr) {
-        if (!refresh) return
-        q.upsertPeer.run(host, null, now(), 0)
-        if (q.wake.run(host).changes) kick()
-        return
-      }
-      if (probing.has(key) || now() - (probeFailed.get(key) || 0) < PROBE_RETRY_MS) return
-      // a few at a time, and few per machine: beacons can be replayed from any address on the LAN,
-      // and each probe is a connection and a copy of the roster (a real move is seen again in 30 s)
-      if (probing.size >= MAX_PROBES || [...probing].filter(k => k.startsWith(`${host} `)).length >= MAX_PROBES_PER_HOST) return
-      probing.add(key)
-      try {
-        const data = await call(host, 'POST', '/v1/hello', helloBody(), { addr, timeout: 2500 })
-        if (!cfg.routes[host]) q.upsertPeer.run(host, addr, now(), 0)
-        learnPeers(data.peers)
-        noteVersion(host, data.version)
-        log(`${host} is at ${addr}`)
-        if (q.wake.run(host).changes) kick()
-      } catch { probeFailed.set(key, now()) } finally { probing.delete(key) }
-      // forget the oldest failures, never all of them: clearing them would end the throttle under a flood
-      if (probeFailed.size > 1000) for (const k of [...probeFailed.keys()].slice(0, probeFailed.size - 1000)) probeFailed.delete(k)
-    } catch (e) { log('probe error', errMsg(e)) }
-  }
-
-  /** Track a member that sent us a request from `remoteIp` (its listening port in the header). @param {string} host @param {string | undefined} remoteIp @param {unknown} portHdr */
-  function notePeer(host, remoteIp, portHdr) {
-    q.upsertPeer.run(host, null, now(), 0)
-    const ip = String(remoteIp || '').replace(/^::ffff:/, '')
-    const port = Number(portHdr)
-    if (ip && !/^(127\.|::1$)/.test(ip) && Number.isInteger(port) && port > 0 && port < 65536) {
-      const addr = ip.includes(':') ? `[${ip}]:${port}` : `${ip}:${port}`
-      if (peerRow(host)?.addr !== addr && !cfg.routes[host]) probe(host, addr)
-    }
-  }
-
-  const knownPeers = () => otherMembers().map(m => m.host)
-
-  /** @type {Map<string, Set<string>>} member -> addresses other members have told us about */
-  const heard = new Map()
-  /**
-   * Other places `host` might be when its stored address stops answering: what it was configured or
-   * first found under (a Tailscale name, an IP), what other members told us, and its own name. A
-   * laptop that moves between networks keeps an address that no beacon will ever replace.
-   * @param {string} host
-   */
-  function otherAddrs(host) {
-    const cur = addrOf(host)
-    const names = allPeers().filter(r => r.alias_of === host).map(r => addrOf(r.host))
-    // what we were told comes last, newest first: any member can say anything, and can't crowd out the rest
-    return [...new Set([...names, `${host}:${cfg.port}`, ...[...(heard.get(host) || [])].reverse()])].filter(a => a !== cur && validAddr(a))
-  }
-
-  /** Addresses worth telling other members about (so every node learns the whole network). */
-  function shareablePeers() {
-    const cutoff = now() - 86400_000
-    return allPeers().filter(r => member(r.host) && r.last_seen >= cutoff && r.addr).map(r => ({ host: r.host, addr: r.addr }))
-  }
-  /**
-   * Addresses another member told us about. They may be stale (DHCP reuse) or wrong, so they are
-   * never used directly: each is probed, and only used once the handshake there presents the key.
-   * @param {unknown} list
-   */
-  function learnPeers(list) {
-    for (const pe of Array.isArray(list) ? list.slice(0, 200) : []) {
-      if (typeof pe?.host !== 'string' || !validAddr(pe?.addr)) continue
-      let h
-      try { h = normHost(pe.host) } catch { continue }
-      if (!member(h) || cfg.routes[h]) continue
-      if (!peerRow(h)?.addr) probe(h, pe.addr, { refresh: false })
-      else if (pe.addr !== peerRow(h)?.addr) {
-        if (!heard.has(h)) heard.set(h, new Set())
-        const known = /** @type {Set<string>} */ (heard.get(h))
-        known.delete(pe.addr)
-        known.add(pe.addr)                                    // newest last; the oldest makes way
-        if (known.size > 8) known.delete(/** @type {string} */ (known.values().next().value))
-      }
-    }
-  }
-
-  /** @param {string} host */
-  async function hello(host) {
-    try {
-      const r = await call(host, 'POST', '/v1/hello', helloBody(), { timeout: 2500 })
-      learnPeers(r.peers)
-      noteVersion(host, r.version)
-      if (q.wake.run(host).changes) kick()   // it's reachable: retry anything waiting for it now
-    } catch {
-      // nothing answers where we think it is: look for it. Each address must prove it holds the key.
-      if (!cfg.routes[host]) await Promise.all(otherAddrs(host).slice(0, 4).map(addr => probe(host, addr)))
-    }
-  }
-  /** @type {Promise<void> | null} */
-  let helloing = null
-  /** Say hello to everyone: finished when the round in progress, or a new one, is. */
-  const helloAll = () => helloing ??= helloRound().finally(() => { helloing = null })
-  async function helloRound() {
-    try {
-      // configured names that aren't member names (an IP, a Tailscale name): find out who they are
-      for (const pe of cfg.peers) if (!member(pe.host) && !isSelf(pe.host) && !peerRow(pe.host)?.alias_of) await resolveName(pe.host)
-      const hosts = knownPeers()
-      let i = 0
-      await Promise.all(Array.from({ length: Math.min(HELLO_CONCURRENCY, hosts.length) }, async () => {
-        while (i < hosts.length) await hello(hosts[i++])
-      }))
-    } catch (e) { log('hello error', errMsg(e)) }
-  }
+  // ---------- peers (see peers.js) ----------
+  const peers = createPeers({
+    cfg, me, roster, q, peerRow, allPeers, now, log, isSelf, member, mergeRoster,
+    removedHost: h => removedHost(h), kick: () => kick(), adoptSelfAlias,
+  })
+  const { call, identify, resolveName, probe, notePeer, shareablePeers, hello, helloAll, knownPeers, notMember } = peers
 
   // ---------- messages ----------
   /** @type {(r: MessageRow) => Envelope} */
@@ -567,8 +301,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       if (full(cfg.host, to.name) && !msgRow(env.id)) return 'full'
       if (!store(env, cfg.host, to.name, 'inbox', 'queued')) return null
       q.claim.run(cfg.host, to.name, now(), env.id)
-      const s = sessions.get(to.name)
-      const live = s?.live || s?.waiter               // before pumping: a wait ends once it has woken the session
+      const live = hub.awake(to.name)               // before pumping: a wait ends once it has woken the session
       if (toPump) toPump.add(to.name)
       else pump(to.name)
       return live ? 'live' : 'queued'
@@ -577,43 +310,6 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     if (!store(env, to.host, to.name, 'held', 'pending')) return null
     kick()
     return 'held'
-  }
-
-  /**
-   * Offer `name`'s queued messages to its live session, if it has one. A few at a time: the session's
-   * acknowledgements bring the next ones, so a big queue is never in memory here or in the session.
-   * @param {string} name
-   */
-  function pump(name) {
-    const s = sessions.get(name)
-    if (!s) return
-    let more = false
-    for (const { id } of q.inboxQueued.all(name, now(), 2 * PUMP_WINDOW)) {     // ids first: most may have been offered already
-      if (s.sent.has(String(id))) continue
-      if (s.sent.size >= PUMP_WINDOW || s.res.writableLength > PUMP_BUFFER) { more = true; break }
-      const r = msgRow(String(id))
-      if (!r) continue
-      s.sent.add(r.id)
-      sse(s.res, 'message', { id: r.id, from: r.from_addr, to: r.to_addr, body: r.body, sent_at: r.sent_at })
-    }
-    if (s.res.writableLength > PUMP_BUFFER && !s.draining) {
-      s.draining = true
-      s.res.once('drain', () => { s.draining = false; safe(() => pump(name)) })
-    }
-    if (more !== s.more) { s.more = more; sse(s.res, 'queue', { more }) }
-    nudge(name)
-  }
-
-  /** Wake `name`'s session if a wait is open and it has messages it hasn't been told about. @param {string} name */
-  function nudge(name) {
-    const s = sessions.get(name)
-    if (!s?.waiter) return
-    const fresh = [...s.sent].filter(id => !s.notified.has(id))
-    if (!fresh.length) return
-    for (const id of fresh) s.notified.add(id)
-    sse(s.waiter, 'wake', { name, count: fresh.length })
-    s.waiter.end()
-    s.waiter = null
   }
 
   /**
@@ -793,14 +489,12 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
 
   // ---------- local API helpers ----------
-  /** The session whose owner is the first of `pids` (nearest first) to own one. @param {number[]} pids */
-  const sessionOwnedBy = pids => pids.map(pid => [...sessions].find(([, x]) => x.owner === pid)).find(Boolean)
   const { authorityFor, askAuthority, remoteLease, localLease } = leaseApi({
     cfg, leases, sessions, now, isSelf, member, knownPeers,
     routeFor: h => routeFor(h),
     call: (h, m, p, o, opts) => call(h, m, p, o, opts),
     version: h => peerRow(h)?.version,
-    ownedBy: sessionOwnedBy,
+    ownedBy: hub.ownedBy,
   })
 
   /** @param {{ from?: unknown, to?: unknown, body?: unknown, ttl_ms?: unknown }} d */
@@ -845,7 +539,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       if (st === 'expired') throw httpErr(400, 'the message expired before it could be queued')
       if (st === 'full') throw fullError(e.to)
       if (!st) throw httpErr(500, 'could not queue message')
-      return { id: e.id, to: e.to, status: `${d.to !== e.to && String(d.to).includes('@') ? `${parseAddr(d.to, cfg.host).host} is this machine — ` : ''}${localStatus(to.name, st === 'live')}` }
+      return { id: e.id, to: e.to, status: `${d.to !== e.to && String(d.to).includes('@') ? `${parseAddr(d.to, cfg.host).host} is this machine — ` : ''}${hub.status(to.name, st === 'live')}` }
     }
     // hidden from the flush loop while we try the direct hand-off, so it isn't sent twice
     inFlight.add(e.id)
@@ -874,7 +568,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     const r = msgRow(e.id)
     if (!r) throw httpErr(500, 'message vanished from the store')
     let status
-    if (r.role === 'inbox') status = `${to.host} is this machine — ${localStatus(to.name)}`
+    if (r.role === 'inbox') status = `${to.host} is this machine — ${hub.status(to.name)}`
     else if (r.state === 'forwarded') status = remote === 'live' ? `pushed to ${e.to}'s live session` : `stored on ${to.host}; ${to.name} will get it when it next connects or checks its inbox`
     else if (r.state === 'failed') status = `FAILED: ${r.last_error}`
     else if (refused) status = `${to.host} has no room for more messages to ${to.name} for now; queued here — will deliver once it has`
@@ -887,32 +581,6 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
   /** @param {string} to */
   const fullError = to => httpErr(429, `not sent: too many messages are waiting for ${to}, or this machine's message store is full. Try again once they've been read`)
-  /** @param {string} name @param {boolean} [live] it was just told (its wait, having woken it, is over) */
-  function localStatus(name, live) {
-    const s = sessions.get(name)
-    return live || s?.live || s?.waiter ? 'pushed to its live session' : s ? `waiting in ${name}'s inbox (the session is connected but reads with the inbox tool)` : `queued until ${name} connects`
-  }
-
-  /** @type {Map<string, string>} host -> why it was last unreachable ('' once reached) */
-  const reach = new Map()
-  /** @type {Map<string, number>} host -> when it last answered */
-  const reachedAt = new Map()
-  /**
-   * Log when a machine becomes unreachable, or reachable again (not every attempt).
-   * @param {string} host @param {string | null} reason null: reached
-   */
-  function noteReach(host, reason) {
-    if (reason === null) reachedAt.set(host, now())
-    const prev = reach.get(host)
-    if (reason === null) {
-      if (prev) log(`${host} is reachable again`)
-      reach.set(host, '')
-    } else if (prev !== reason) {
-      log(`cannot reach ${host}: ${reason}`)
-      reach.set(host, reason)
-    }
-  }
-
   async function localPeers() {
     const remote = await Promise.all(knownPeers().map(async h => {
       try {
@@ -934,18 +602,12 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     }))
   }
 
-  /** @param {string} token */
-  function inviteValid(token) {
-    const row = /** @type {{ expires_at: number, used_at: number | null } | undefined} */ (q.invite.get(sha256(token)))
-    return !!row && !row.used_at && row.expires_at > now()
-  }
-
   /**
    * A machine joining with an invite token: add it to the roster (signed by us).
    * @param {{ token?: unknown, host?: unknown, cert?: unknown }} d
    */
   function join(d) {
-    if (typeof d.token !== 'string' || !inviteValid(d.token)) throw httpErr(403, 'this invite is not valid (already used, expired or revoked): run `natter invite` on a member for a new one')
+    if (typeof d.token !== 'string' || !invites.valid(d.token)) throw httpErr(403, 'this invite is not valid (already used, expired or revoked): run `natter invite` on a member for a new one')
     let pem, host
     try { pem = new crypto.X509Certificate(Buffer.from(String(d.cert), 'base64')).toString(); host = normHost(d.host) } catch { throw httpErr(400, 'bad join request') }
     if (!machineName(host)) throw httpErr(400, `"${host}" can't identify a machine: join under a name, by ending the invite line with \`| sh -s -- --host <name>\``)
@@ -961,8 +623,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       roster.save()
       log(`${host} joined the network (key ${shortFp(fp)})`)
     }
-    q.useInvite.run(now(), sha256(d.token))
-    setImmediate(rotate)          // after this reply: the last open invite's key goes once it's used
+    invites.use(d.token)
     setImmediate(helloAll)
     return { net: roster.net, records: roster.records, peers: shareablePeers(), host: cfg.host }
   }
@@ -1024,10 +685,10 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     // ---- joining (an invite token is the credential) ----
     if (req.method === 'GET' && (p === '/join/install' || p === '/join/pkg.tgz' || p === '/join/app.zip')) {
       const t = u.searchParams.get('t')
-      if (!t || !inviteValid(t)) return reply(res, 404, { error: 'this invite is not valid (already used, expired or revoked): run `natter invite` on a member for a new one' })
+      if (!t || !invites.valid(t)) return reply(res, 404, { error: 'this invite is not valid (already used, expired or revoked): run `natter invite` on a member for a new one' })
       if (p === '/join/install') {
         res.writeHead(200, { 'content-type': 'text/x-shellscript' })
-        return res.end(installScript(req.headers.host, cfg, t, invite?.fp || ''))
+        return res.end(installScript(req.headers.host, cfg, t, invites.fp()))
       }
       const bundle = appBundle()
       if (p === '/join/app.zip' && !bundle) return reply(res, 404, { error: 'this machine does not run the nattermatic app' })
@@ -1118,10 +779,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       }
       case 'POST /v1/hello': {
         if (peer.fp !== me.fp) {
-          if (q.wake.run(peer.host).changes) kick()
-          mergeRoster(d.records)
-          learnPeers(d.peers)
-          noteVersion(peer.host, d.version)
+          peers.greeted(peer.host, d)
         }
         return reply(res, 200, { host: cfg.host, peers: shareablePeers(), records: roster.records, version: VERSION })
       }
@@ -1137,50 +795,21 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   async function handleLocal(req, res, u, p, d) {
     switch (`${req.method} ${p}`) {
       case 'GET /local/stream': {
-        const want = sanitizeName(u.searchParams.get('name'))
         const token = String(u.searchParams.get('token') || '')
-        let name = want
-        const existing = sessions.get(want)
-        // a reconnecting session (same token) replaces its own stale stream; anyone else gets a new name
-        const reconnecting = existing && token && existing.token === token ? existing : null
-        if (reconnecting) { reconnecting.res.end(); reconnecting.waiter?.end(); sessions.delete(want) }
-        for (let i = 2; sessions.has(name); i++) name = `${want.slice(0, 47 - String(i).length)}-${i}`   // stays within the 48-char name limit
-        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-        const s = {
-          res, sent: new Set(), token, live: u.searchParams.get('mode') !== 'poll', owner: Number(u.searchParams.get('owner')) || 0, cwd: u.searchParams.get('cwd') || '',
-          // told about already, so a session that doesn't read a message isn't woken for it again and again
-          notified: reconnecting?.notified ?? new Set(), waiter: /** @type {Res | null} */ (null), more: false, draining: false,
-          lastActive: reconnecting?.lastActive ?? 0,     // only the session's own actions count
-        }
-        sessions.set(name, s)
-        sse(res, 'hello', { name, address: `${name}@${cfg.host}`, host: cfg.host })
-        const ping = setInterval(() => res.write(': ping\n\n'), 20_000)
-        res.on('close', () => { clearInterval(ping); s.waiter?.end(); if (sessions.get(name) === s) sessions.delete(name); leases.marks() })
+        const { name, reconnected } = hub.connect(res, {
+          want: sanitizeName(u.searchParams.get('name')), token, live: u.searchParams.get('mode') !== 'poll',
+          owner: Number(u.searchParams.get('owner')) || 0, cwd: u.searchParams.get('cwd') || '',
+        }, () => leases.marks())
         log(`session connected: ${name}`)
         leases.marks()
         // the same agent back under its name after its adapter restarted keeps its leases
-        if (!reconnecting && token) leases.carryOver(name, sessionId(token), askAuthority).catch(e => log('lease carry-over:', errMsg(e)))
+        if (!reconnected && token) leases.carryOver(name, sessionId(token), askAuthority).catch(e => log('lease carry-over:', errMsg(e)))
         pump(name)
         return
       }
       case 'GET /local/wake': {                 // the wait behind `natter wake`: answers once, when there's news
         const pids = String(u.searchParams.get('pids') || '').split(',').map(Number).filter(Boolean)
-        // by process, nearest first: a Claude started from inside another Claude's session belongs to
-        // the inner one. Codex starts every session's adapter from one shared app-server, so its waiter
-        // also says which folder: the newest session there, if there are several
-        const cwd = u.searchParams.get('cwd')
-        const found = cwd ? [...sessions].reverse().find(([, x]) => pids.includes(x.owner) && x.cwd === cwd)
-          : sessionOwnedBy(pids)
-        if (!found) return reply(res, 404, { error: 'no session' })
-        const [name, s] = found
-        s.lastActive = now()                  // the hook waits again at each turn: the session is active
-        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-        if (s.live) { sse(res, 'done', {}); return res.end() }   // a channel session is woken by the push itself
-        if (s.waiter) { sse(s.waiter, 'done', {}); s.waiter.end() }
-        s.waiter = res
-        const ping = setInterval(() => res.write(': ping\n\n'), 20_000)
-        res.on('close', () => { clearInterval(ping); if (s.waiter === res) s.waiter = null })
-        nudge(name)
+        if (!hub.wait(res, pids, u.searchParams.get('cwd'))) return reply(res, 404, { error: 'no session' })
         return
       }
       case 'POST /local/lease':
@@ -1188,26 +817,15 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       case 'GET /local/lease': {               // for tools that enforce leases: who holds this, if anyone
         return reply(res, 200, await localLease({ op: 'check', resource: u.searchParams.get('resource') }))
       }
-      case 'POST /local/ack': {               // state 'pushed': shown in a channel session (no read receipt)
-        const s = sessions.get(d.name)
-        const mark = d.state === 'pushed' ? q.pushed : q.delivered
-        // a message the session has now is done with: nothing need remember it for the session's life
-        tx(() => { for (const id of Array.isArray(d.ids) ? d.ids : []) { mark.run(now(), String(id)); s?.sent.delete(String(id)); s?.notified.delete(String(id)) } })
-        if (s) pump(d.name)
+      case 'POST /local/ack':                 // state 'pushed': shown in a channel session (no read receipt)
+        hub.ack(String(d.name), d.ids, d.state)
         return reply(res, 200, { ok: true })
-      }
-      case 'POST /local/told': {               // a session has read these; or not (a cancelled read), and it should hear of them again
-        const s = sessions.get(d.name)
-        for (const id of Array.isArray(d.ids) ? d.ids : []) { if (d.told) s?.notified.add(String(id)); else s?.notified.delete(String(id)) }
-        if (s) nudge(d.name)
+      case 'POST /local/told':                // a session has read these; or not (a cancelled read)
+        hub.told(String(d.name), d.ids, !!d.told)
         return reply(res, 200, { ok: true })
-      }
-      case 'POST /local/nack': {               // the session couldn't take these: offer them again
-        const s = sessions.get(d.name)
-        for (const id of Array.isArray(d.ids) ? d.ids : []) s?.sent.delete(String(id))
-        if (s) setTimeout(() => safe(() => pump(d.name)), 2000)
+      case 'POST /local/nack':                // the session couldn't take these: offer them again
+        hub.nack(String(d.name), d.ids)
         return reply(res, 200, { ok: true })
-      }
       case 'POST /local/send':
         return reply(res, 200, await localSend(d))
       case 'GET /local/peers':
@@ -1227,15 +845,13 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         })
       case 'POST /local/invite': {
         if (!roster.members.has(me.fp)) throw httpErr(409, 'this machine is not a member of its network, so it cannot invite others')
-        const { token, fp } = newInvite()
-        return reply(res, 200, { token, fp, host: cfg.host, port: cfg.port, tailscale: await tailscale(), ip: localIPv4s().find(a => !a.startsWith('127.')), expires_at: now() + INVITE_TTL_MS })
+        const { token, fp, expires_at } = invites.create()
+        return reply(res, 200, { token, fp, host: cfg.host, port: cfg.port, tailscale: await tailscale(), ip: localIPv4s().find(a => !a.startsWith('127.')), expires_at })
       }
       case 'GET /local/invites':                // open invites (their tokens are stored hashed, so only times)
         return reply(res, 200, { invites: q.openInvites.all(now()) })
       case 'POST /local/invite/revoke': {
-        const revoked = Number(q.revokeInvites.run().changes)
-        rotate()
-        return reply(res, 200, { revoked })
+        return reply(res, 200, { revoked: invites.revokeAll() })
       }
       case 'POST /local/remove': {
         let host
@@ -1259,12 +875,12 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         if (me.fp !== roster.net) throw httpErr(403, `only the founding machine can do this: ${roster.ranked.get(roster.net)?.host ?? 'the first machine on the network'}`)
         // what the others know first, from a round begun now: an add we haven't heard of would be lost
         const asked = now()
-        const catchUp = async () => { await helloing; await helloAll(); return true }
+        const catchUp = async () => { await peers.freshRound(); return true }
         /** @type {NodeJS.Timeout | undefined} */
         let limit
         const caughtUp = await Promise.race([catchUp(), new Promise(res => { limit = setTimeout(() => res(false), COMPACT_WAIT_MS) })]).finally(() => clearTimeout(limit))
         const list = [...roster.members.values()].map(m => m.host)
-        const offline = list.filter(h => h !== cfg.host && !(Number(reachedAt.get(h)) >= asked))
+        const offline = list.filter(h => h !== cfg.host && !(Number(peers.reachedAt(h)) >= asked))
         if (!d.confirm) return reply(res, 200, { members: list, offline, caughtUp, ...rosterStatus() })
         if (req.socket.destroyed) return                       // the command was interrupted: that's a no
         if (!caughtUp && !d.force) throw httpErr(504, `not every machine could be checked in time, so nothing was changed. Not reached: ${offline.join(', ')}. Run it again, or add --force to go ahead without them`)
@@ -1317,7 +933,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     closing = true
     log('shutting down')
     timers.forEach(clearInterval)
-    for (const s of sessions.values()) s.res.end()
+    hub.closeAll()
     discovery?.stop()
     server.close()
     server.closeAllConnections?.()
@@ -1395,8 +1011,6 @@ export function installScript(hostHeader, cfg, token, pin) {
   return readAsset('install.sh').toString('utf8').replace('#@@PRESET@@', () => preset)   // no $-patterns
 }
 
-/** @param {http.ServerResponse} res @param {string} event @param {unknown} data */
-function sse(res, event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
 const isLoopback = (/** @type {string | undefined} */ a) => a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
 
 /** @param {http.IncomingMessage} req @returns {Promise<string>} */
