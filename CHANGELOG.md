@@ -29,7 +29,7 @@
 - **Fix:** a message another machine refuses is no longer marked failed if it was handed over another
   way meanwhile.
 - **Inside:** the node is split into modules with their own state (sessions, invites, other machines,
-  lease requests, database statements). A message's moves from state to state are defined in one
+  messages on their way, lease requests, database statements). A message's moves from state to state are defined in one
   table, and a test checks every statement against it.
 
 ## 0.4.1 — 2026-11-15
