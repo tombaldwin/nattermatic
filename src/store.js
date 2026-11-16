@@ -6,12 +6,40 @@ import { DatabaseSync } from 'node:sqlite'
  *   outbox - we are the sender's node; must hand to the recipient's node
  *   held   - we are holding a copy for an offline machine; must hand to the recipient's node
  *   inbox  - recipient is on this machine; must push to the local session
- * messages.state:
- *   pending (outbox/held: still to hand over) -> forwarded
- *   queued  (inbox: waiting for session)      -> pushed (shown in a channel session; no read receipt)
- *                                             -> delivered (read with the inbox tool)
- *   expired | failed
  */
+
+/**
+ * Every move a message can make, as role:state. A message is stored as outbox:pending,
+ * held:pending or inbox:queued, and changes only by a move listed here: each statement below that
+ * changes one takes its WHERE clause from this table (see `from`), and the store's tests check that
+ * nothing else moves. Retrying (more attempts, a later next try) keeps a message where it is.
+ * @type {Record<string, string[]>} destination -> the role:states that may move there
+ */
+export const MOVES = {
+  // handed to the recipient's node, or to a machine holding copies for it
+  'forwarded': ['outbox:pending', 'held:pending'],
+  // the machine it went to refused it as invalid: retrying won't help
+  'failed': ['outbox:pending', 'held:pending'],
+  // its expiry passed before it reached the next machine or the session
+  'expired': ['outbox:pending', 'held:pending', 'inbox:queued'],
+  // its machine turned out to be this one (a name we didn't know was ours)
+  'inbox:queued': ['outbox:pending', 'held:pending'],
+  // shown in a channel session: Claude Code gives no receipt, so this means "shown", not "read"
+  'pushed': ['inbox:queued'],
+  // read by its session. Even if it expired, or was shown, meanwhile: the session has it
+  'delivered': ['inbox:queued', 'inbox:pushed', 'inbox:expired', 'inbox:delivered'],
+}
+
+/**
+ * The WHERE condition for a move to `to`, from the table above. Only some of the role:states
+ * listed may apply, for a statement that moves fewer (`only`).
+ * @param {keyof typeof MOVES} to @param {string[]} [only]
+ */
+export function from(to, only) {
+  const list = MOVES[to].filter(rs => !only || only.includes(rs))
+  if (!list.length || (only && list.length !== only.length)) throw new Error(`not a move to ${to}: ${only}`)
+  return `(${list.map(rs => { const [r, st] = rs.split(':'); return `(role='${r}' AND state='${st}')` }).join(' OR ')})`
+}
 /** @param {string} file */
 export function openStore(file) {
   const db = new DatabaseSync(file)
@@ -60,21 +88,22 @@ export function queries(db) {
     dueFor: db.prepare(`SELECT id,to_host,role,attempts,replicated FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host=? ORDER BY sent_at LIMIT 2000`),
     dueNames: db.prepare(`SELECT to_host FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host NOT IN (SELECT value FROM json_each(?)) GROUP BY to_host ORDER BY MIN(attempts) LIMIT ?`),
     // handed over: the text has no more use here, and shouldn't sit on a holder until the message expires
-    forwarded: db.prepare(`UPDATE messages SET state='forwarded', body='', updated_at=? WHERE id=? AND state='pending'`),
-    failed: db.prepare(`UPDATE messages SET state='failed', last_error=?, updated_at=? WHERE id=?`),
+    forwarded: db.prepare(`UPDATE messages SET state='forwarded', body='', updated_at=? WHERE id=? AND ${from('forwarded')}`),
+    // only a message still to hand over: another path may have handed it over meanwhile
+    failed: db.prepare(`UPDATE messages SET state='failed', last_error=?, updated_at=? WHERE id=? AND ${from('failed')}`),
     retry: db.prepare(`UPDATE messages SET attempts=attempts+1, next_attempt=?, last_error=?, updated_at=? WHERE id=? AND state='pending'`),
     replicated: db.prepare(`UPDATE messages SET replicated=1 WHERE id=?`),
     wake: db.prepare(`UPDATE messages SET next_attempt=0 WHERE state='pending' AND to_host=?`),
-    toInbox: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, updated_at=? WHERE to_host=? AND state='pending' RETURNING to_name`),
+    toInbox: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, updated_at=? WHERE to_host=? AND ${from('inbox:queued')} RETURNING to_name`),
     inboxQueued: db.prepare(`SELECT id FROM messages WHERE role='inbox' AND to_name=? AND state='queued' AND expires_at>? ORDER BY sent_at LIMIT ?`),
     // the machine's own copy of something it was holding as a copy for a name it didn't know was its own
-    claim: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, to_name=?, updated_at=? WHERE id=? AND role='held' AND state='pending'`),
-    delivered: db.prepare(`UPDATE messages SET state='delivered', updated_at=? WHERE id=? AND role='inbox'`),
+    claim: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, to_name=?, updated_at=? WHERE id=? AND ${from('inbox:queued', ['held:pending'])}`),
+    delivered: db.prepare(`UPDATE messages SET state='delivered', updated_at=? WHERE id=? AND ${from('delivered')}`),
     // pushed into a channel session: Claude Code gives no receipt, so this means "shown", not "read"
-    pushed: db.prepare(`UPDATE messages SET state='pushed', updated_at=? WHERE id=? AND role='inbox' AND state='queued'`),
+    pushed: db.prepare(`UPDATE messages SET state='pushed', updated_at=? WHERE id=? AND ${from('pushed')}`),
     // newest to arrive: sent_at is whatever the sender says
     history: db.prepare(`SELECT * FROM messages WHERE role='inbox' AND to_name=? ORDER BY rowid DESC LIMIT ?`),
-    expire: db.prepare(`UPDATE messages SET state='expired', updated_at=? WHERE state IN ('pending','queued') AND expires_at<=?`),
+    expire: db.prepare(`UPDATE messages SET state='expired', updated_at=? WHERE ${from('expired')} AND expires_at<=?`),
     gc: db.prepare(`DELETE FROM messages WHERE expires_at < ?`),
     counts: db.prepare(`SELECT role, state, count(*) n FROM messages GROUP BY role, state`),
     waiting: db.prepare(`SELECT count(*) n FROM messages WHERE to_host=? AND to_name=? AND state IN ('pending','queued')`),
