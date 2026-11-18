@@ -294,6 +294,9 @@ function clearDb(file) {
   }
 }
 
+/** Is process `pid` still running? @param {number} pid */
+function running(pid) { try { process.kill(pid, 0); return true } catch (e) { return /** @type {any} */ (e).code === 'EPERM' } }
+
 /** The port this machine's config says its node is on, if that's known. (A home of its own defaults to nothing: 7777 is another node's.) */
 function configuredPort() {
   try { return readConfigFile()?.port || (process.env.NATTERMATIC_HOME ? 0 : 7777) } catch { return 0 }
@@ -314,6 +317,8 @@ async function stopRunningNode(cfgs) {
     if (!h || 'foreign' in h) continue
     try { await l.req('POST', '/local/shutdown', undefined, '', 15_000, true) } catch (e) { warn(`could not stop the running node: ${errMsg(e)}`); continue }
     for (let i = 0; i < 30 && await l.health(); i++) await sleep(100)
+    // its port closes first, then it lets go of the database: wait for it to be gone before setup opens that
+    for (let i = 0; i < 30 && running(h.pid); i++) await sleep(100)
     stopped = true
   }
   if (stopped) return

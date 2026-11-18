@@ -45,9 +45,10 @@ export function openStore(file) {
   const db = new DatabaseSync(file)
   // it holds messages and lease notes as they are: this user's only, even if its folder were shared
   for (const f of [file, `${file}-wal`, `${file}-shm`]) try { fs.chmodSync(f, 0o600) } catch {}
+  // the wait for a lock first: setting the journal mode can need one, while another process closes the file
   db.exec(`
-    PRAGMA journal_mode=WAL;
     PRAGMA busy_timeout=5000;
+    PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS messages(
       id TEXT PRIMARY KEY,
       from_addr TEXT NOT NULL, to_addr TEXT NOT NULL, to_host TEXT NOT NULL, to_name TEXT NOT NULL,
