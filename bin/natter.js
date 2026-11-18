@@ -5,6 +5,9 @@ import { resolve, findCommand, mainHelp, commandHelp, suggest, completionScript 
 
 // (not --no-warnings on the line above: env -S isn't everywhere.) node:sqlite warns when it's loaded
 process.removeAllListeners('warning')
+// measuring test coverage (scripts/coverage.mjs): a test about to kill this process says so first,
+// and what ran so far is written out, as a killed process writes nothing
+if (process.env.NODE_V8_COVERAGE) process.on('SIGUSR2', () => { import('node:v8').then(v8 => v8.takeCoverage()).catch(() => {}) })
 
 const [first, ...rest] = process.argv.slice(2)
 const cmd = resolve(first)

@@ -69,6 +69,7 @@ async function stopNode(n) {
   const p = procs[n]
   if (!p || p.exitCode !== null || p.signalCode !== null) return   // already gone (killed by a signal: exitCode stays null)
   const done = new Promise(r => p.once('exit', r))
+  if (process.env.NODE_V8_COVERAGE) { p.kill('SIGUSR2'); await sleep(300) }    // measuring coverage: it writes what ran first
   p.kill('SIGKILL')   // simulate a crash / machine dropping off
   await done
 }

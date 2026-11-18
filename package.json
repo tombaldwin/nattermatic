@@ -46,6 +46,7 @@
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "node --no-warnings --test test/unit/*.test.js",
     "test:e2e": "node --no-warnings test/e2e.js",
+    "coverage": "rm -rf coverage && NODE_V8_COVERAGE=coverage/raw npm run test:unit && NODE_V8_COVERAGE=coverage/raw npm run test:e2e && node scripts/coverage.mjs coverage/raw",
     "typecheck": "tsc -p .",
     "build:app": "node scripts/build-app.mjs"
   },

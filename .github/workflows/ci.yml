@@ -23,7 +23,12 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:unit
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.node == 24) }}
       - run: npm run test:e2e
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.node == 24) }}
+      # one run measures line coverage as it tests: the table is in the job summary
+      - run: npm run coverage
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == 24 }}
 
   install-smoke:
     # Runs the real installer against the packed package, in a throwaway HOME.
