@@ -223,6 +223,7 @@ async function main() {
 async function client() {
   const { Local } = await import('../src/local.js')
   const local = new Local(loadConfig())
+  local.startIfNone = true
   await local.ensureNode()
   return local
 }

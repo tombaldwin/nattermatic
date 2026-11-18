@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Fix:** a message sent, or any other command or tool used, just as this machine's node stopped
+  failed with "cannot reach the nattermatic node". It now starts a node and goes through.
+
 ## 0.4.2 — 2026-11-18
 
 - **A node that's starting is waited for.** From binding its port until it's ready (reading its

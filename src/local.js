@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import crypto from 'node:crypto'
 import { authedRequest, authedRaw, PinError, ProtoError, StartingError, PROTO } from './tls.js'
-import { cmpVersion, ensureHomeDir, errMsg, readIdentity, rosterPath, sleep, VERSION } from './config.js'
+import { cmpVersion, ensureHomeDir, errCode, errMsg, readIdentity, rosterPath, sleep, VERSION } from './config.js'
 import { Roster } from './roster.js'
 import { selfCmd } from './claude.js'
 
@@ -83,6 +83,12 @@ export class Local {
     this.startingWaitMs = STARTING_WAIT_MS
     /** how long ensureNode waits for something holding the port that doesn't answer (#6) */
     this.heldWaitMs = HELD_WAIT_MS
+    /**
+     * A request that finds nothing on the port starts a node and is sent again (#13): for sessions and
+     * commands, which would otherwise fail in the moment between one node stopping and the next
+     * starting. Not for hooks, which shouldn't start a node, nor for anything that stops one.
+     */
+    this.startIfNone = false
   }
 
   /**
@@ -154,8 +160,11 @@ export class Local {
     try {
       r = await send()
     } catch (e) {
-      // refused before anything was sent: if this machine's key was replaced meanwhile, try again with the new one
-      if (!(e instanceof PinError) || !this.reloadIdentity()) throw this.wrap(e)
+      // refused before anything was sent, so it can be sent again: once a node has started (#13), or
+      // with this machine's key if that was replaced meanwhile
+      if (errCode(e) === 'ECONNREFUSED' && this.startIfNone && !anyProto && !fs.existsSync(path.join(this.cfg.dir, 'disabled'))) {
+        try { await this.ensureNode() } catch { throw this.wrap(e) }
+      } else if (!(e instanceof PinError) || !this.reloadIdentity()) throw this.wrap(e)
       try { r = await send() } catch (e2) { throw this.wrap(e2) }
     }
     /** @type {any} */

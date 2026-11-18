@@ -59,6 +59,7 @@ export async function runAdapter(cfg, { name, poll = false, channel } = {}) {
     log('messages are read with the inbox tool; a hook wakes the session when one arrives')
   }
   const local = new Local(cfg)
+  local.startIfNone = true      // a tool call just as the node restarts waits for the next (#13)
   let myName = sanitizeName(name || process.env.NATTERMATIC_NAME || path.basename(process.cwd()))
   let address = `${myName}@${cfg.host}`
   let ready = false
