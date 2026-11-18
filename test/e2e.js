@@ -335,6 +335,19 @@ try {
     assert.deepEqual(r2.data.unknown, [fromNew.id])
   })
 
+  await step('a client that has not proved a key gets little read (#9)', async () => {
+    const pad = (/** @type {number} */ n) => ({ messages: [], pad: 'x'.repeat(n) })
+    const status = (/** @type {Promise<{ status: number }>} */ p) => p.then(r => r.status, e => /ECONNRESET|EPIPE|socket hang up/.test(String(e?.message)) ? 'reset' : Promise.reject(e))
+    // a member, proved: a large batch is read
+    assert.equal(await status(memberPost('b', '/v1/deliver', pad(3 << 20))), 200)
+    // a machine b doesn't know, past the gate: its hello is read only up to a roster's size...
+    const stranger = newIdentity()
+    assert.ok([413, 'reset'].includes(await status(memberPost('b', '/v1/hello', pad(3 << 20), stranger))), 'a newcomer\'s hello is capped')
+    assert.equal(await status(memberPost('b', '/v1/hello', pad(1000), stranger)), 403, 'and still refused, as it adds no one')
+    // ...and anything else it sends isn't read at all: refused, not "too large"
+    assert.equal(await status(memberPost('b', '/v1/deliver', pad(9 << 20), stranger)), 403)
+  })
+
   await step('node restarts transparently under a connected session', async () => {
     await stopNode('b')
     await startNode('b')

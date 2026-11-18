@@ -31,6 +31,7 @@ import { createLeases, sessionId } from './leases.js'
 import { parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleNameAsync, localIPv4s, errMsg, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
 
 const MAX_JOIN_REQ = 16 << 10          // a join request (before any identity check) is small
+const MAX_NEWCOMER_REQ = 2 * MAX_ROSTER_BYTES   // a new member's first hello, read before it has proved its key
 const MAX_JOIN_CHAIN = 4               // add records an unknown client may submit (it, whoever added it, ...)
 const HELLO_EVERY = 120_000
 const PEER_FORGET_MS = 30 * 86400_000
@@ -363,27 +364,31 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     const joining = req.method === 'POST' && p === '/join'
     // request bodies are read only for joins (small) and for clients past the gate
     if (!joining && !gated.has(sock)) return reply(res, 404, { error: 'not found' })
-    const body = req.method === 'POST' ? await readBody(req, joining ? MAX_JOIN_REQ : MAX_REQ) : ''
+
+    // ---- identity, step 2: the client signs the same connection's exporter with its machine key ----
+    let clientFp = authed.get(sock) || ''
+    const [fp = '', sig] = joining || clientFp ? [] : String(req.headers['x-agentlink-auth'] || '').split('.')
+    /** @param {string} f */
+    const proves = f => { const pub = f === me.fp ? myPub : roster.members.get(f)?.publicKey; return !!pub && checkAuth(pub, 'client', exporterOf(sock), sig) }
+    if (fp && proves(fp)) { clientFp = fp; authed.set(sock, fp) }
+    // A machine we don't know yet can prove itself only by a hello carrying the records that add it,
+    // so that body is read before it's proved: no bigger than a roster and the addresses it shares.
+    // Anyone else who hasn't proved a key has nothing read (#9).
+    const newcomer = !clientFp && !joining && p === '/v1/hello' && !!fp && fp !== me.fp && !roster.members.has(fp)
+    const readMax = joining ? MAX_JOIN_REQ : clientFp ? MAX_REQ : newcomer ? MAX_NEWCOMER_REQ : 0
+    const body = req.method === 'POST' && readMax ? await readBody(req, readMax) : ''
     /** @type {Record<string, any>} request body (untrusted: every field is checked where it's used) */
     let d = {}
     if (body) { try { d = JSON.parse(body) } catch { return reply(res, 400, { error: 'bad JSON' }) } }
     if (!d || typeof d !== 'object') d = {}
     if (joining) return reply(res, 200, join(d))
-
-    // ---- identity, step 2: the client signs the same connection's exporter with its machine key ----
-    let clientFp = authed.get(sock) || ''
-    if (!clientFp) {
-      const [fp = '', sig] = String(req.headers['x-agentlink-auth'] || '').split('.')
-      // a machine that has just joined proves it with the records that add it (and those adding
-      // whoever added it, if they are new too). Nothing else is taken before the signature checks out.
-      if (p === '/v1/hello' && fp !== me.fp && !roster.members.has(fp)) {
-        // it may be in a snapshot we haven't heard of, with no add left to show: one record, and only
-        // the founder can have signed it
-        mergeRoster(Array.isArray(d.records) ? d.records.filter((/** @type {any} */ r) => r?.type === 'snapshot').slice(-1) : [])
-        if (!roster.members.has(fp)) mergeRoster(joinChain(d.records, fp))
-      }
-      const pub = fp === me.fp ? myPub : roster.members.get(fp)?.publicKey
-      if (pub && checkAuth(pub, 'client', exporterOf(sock), sig)) { clientFp = fp; authed.set(sock, fp) }
+    if (newcomer) {
+      // it proves it with the records that add it (and those adding whoever added it, if they are new
+      // too). Nothing else is taken before the signature checks out. It may be in a snapshot we haven't
+      // heard of, with no add left to show: one record, and only the founder can have signed it
+      mergeRoster(Array.isArray(d.records) ? d.records.filter((/** @type {any} */ r) => r?.type === 'snapshot').slice(-1) : [])
+      if (!roster.members.has(fp)) mergeRoster(joinChain(d.records, fp))
+      if (proves(fp)) { clientFp = fp; authed.set(sock, fp) }
     }
     const local = isLoopback(sock.remoteAddress) && clientFp === me.fp   // a process holding this machine's key, on this machine
 

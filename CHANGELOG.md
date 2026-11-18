@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Security:** a node reads nothing a client sends until it has proved its key, except a new
+  machine's first hello, which is limited to the size of a member list (2 MB, down from 8 MB).
 - **Fix:** a message sent, or any other command or tool used, just as this machine's node stopped
   failed with "cannot reach the nattermatic node". It now starts a node and goes through.
 
