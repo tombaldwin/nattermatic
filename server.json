@@ -8,12 +8,12 @@
     "url": "https://github.com/tombaldwin/nattermatic",
     "source": "github"
   },
-  "version": "0.4.1",
+  "version": "0.4.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "nattermatic",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "packageArguments": [
         {
           "type": "positional",

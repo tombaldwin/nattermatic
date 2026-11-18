@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 — 2026-11-18
 
 - **A node that's starting is waited for.** From binding its port until it's ready (reading its
   database, asking Tailscale its name), a node answers "starting". Clients took that for something
