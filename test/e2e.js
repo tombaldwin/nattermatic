@@ -1556,6 +1556,26 @@ try {
     await idle.close(); await waiter.close()
   })
 
+  await step("leases: a Codex session's are renewed by its heartbeat hook, found by its folder (#8)", async () => {
+    // as Codex runs it: the adapter in poll mode, in the session's folder, and `natter codex-beat`
+    // after each tool call with Codex's hook input on stdin, from the process that started the adapter
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(ROOT, 'codex-proj-')))
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(ROOT, 'codex-other-')))
+    const client = new Client({ name: 'codex', version: '0' }, { capabilities: {} })
+    await client.connect(new StdioClientTransport({ command: EXE, args: [...PRE, 'mcp', '--poll'], cwd: folder, env: { ...envFor('a'), NATTERMATIC_NAME: '' }, stderr: 'ignore' }))
+    const call = async (/** @type {string} */ tool, args = {}) => (await client.callTool({ name: tool, arguments: args })).content[0].text
+    const beat = (/** @type {string} */ cwd) => spawnSync(EXE, [...PRE, 'codex-beat'], { env: envFor('a'), input: JSON.stringify({ session_id: crypto.randomUUID(), cwd, hook_event_name: 'PostToolUse', tool_name: 'mcp__nattermatic__peers' }), encoding: 'utf8' })
+    assert.match(await call('claim', { resource: 'codexdb', note: 'migrating', minutes: 0.04 }), /^Claimed/)
+    let t = Date.now()
+    while (Date.now() - t < 5000) { assert.equal(beat(folder).status, 0); await sleep(300) }
+    assert.match(check('a', 'codexdb'), /held by/, 'still held after twice its ttl: its heartbeat renewed it')
+    // a heartbeat from a session in another folder isn't this one's
+    t = Date.now()
+    while (Date.now() - t < 5000 && /held by/.test(check('a', 'codexdb'))) { beat(other); await sleep(300) }
+    assert.match(check('a', 'codexdb'), /is free/, 'not renewed by another folder\'s heartbeat')
+    await client.close()
+  })
+
   await step('leases: only a person breaks one, and its holder is told; lease run holds one exactly as long as its command', async () => {
     const s = await adapter('a', 'lease-broken')
     assert.match(await s.call('claim', { resource: 'deploy', note: 'deploying' }), /^Claimed/)

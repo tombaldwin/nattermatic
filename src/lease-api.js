@@ -15,7 +15,7 @@ import { httpErr, PeerAnswered } from './errors.js'
  *   routeFor: (h: string) => Promise<string | null>,
  *   call: (host: string, method: 'GET' | 'POST', p: string, obj?: object, o?: { timeout?: number }) => Promise<any>,
  *   version: (h: string) => string | null | undefined,
- *   ownedBy: (pids: number[]) => [string, { lastActive: number }] | undefined,
+ *   ownedBy: (pids: number[], cwd?: string | null) => [string, { lastActive: number }] | undefined,
  * }} o
  */
 export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeers, routeFor, call, version, ownedBy }) {
@@ -94,7 +94,7 @@ export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeer
     const op = String(d.op || '')
     if (op === 'beat') {
       const pids = (Array.isArray(d.pids) ? d.pids : []).map(Number).filter(Boolean)
-      const found = ownedBy(pids)
+      const found = ownedBy(pids, typeof d.cwd === 'string' && d.cwd ? d.cwd : null)   // a folder: from a Codex session
       if (!found) return { ok: false }
       found[1].lastActive = now()
       return { ok: true, name: found[0] }

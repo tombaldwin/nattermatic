@@ -1,7 +1,7 @@
 // What setup writes to Codex's config.toml, and how it leaves the user's own settings.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { configBlock, withBlock, withoutBlock, clashes, hookCmd, codexWakeText } from '../../src/codex.js'
+import { beatCmd, configBlock, withBlock, withoutBlock, clashes, hookCmd, codexWakeText } from '../../src/codex.js'
 
 const USER = `model = "gpt-5"
 
@@ -20,6 +20,9 @@ test('the block adds the adapter in poll mode, approves the read tools, and the 
   assert.match(b, /\[\[hooks\.SessionStart\]\]\n\[\[hooks\.SessionStart\.hooks\]\]\ntype = "command"/)
   assert.ok(b.includes(JSON.stringify(hookCmd())))
   assert.match(hookCmd(), / codex-hook$/)
+  // the heartbeat (#8): after every tool call, in the background, a plain command whatever the user's shell
+  assert.match(b, /\[\[hooks\.PostToolUse\]\]\n\[\[hooks\.PostToolUse\.hooks\]\]\ntype = "command"\ncommand = .* codex-beat"\ntimeout = 5\nasync = true\n/)
+  assert.doesNotMatch(beatCmd(), /[;|&]|\bif\b/, 'no shell syntax')
   assert.doesNotMatch(configBlock({ hook: false }), /hooks/, 'no hook for a Codex that can\'t queue')
 })
 

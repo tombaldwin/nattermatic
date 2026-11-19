@@ -60,7 +60,7 @@ you're done. Name it like an agent: `testdb@desk.local`, or just `testdb` for th
 - If the claim is refused, don't use the resource, and never work round the lease. Wait (with
   `notify: true` you get a message when it's free, and then claim it again), ask its holder, or ask
   your user.
-- In Claude Code your lease is renewed while you keep working; in other agents, claim it again
+- In Claude Code and Codex your lease is renewed while you keep working; in other agents, claim it again
   before it runs out. Claiming it again always renews it. If you're told it
   has ended, you no longer hold it: claim it again before carrying on, and check nothing changed.
 - For a long command that runs unattended (a restore, a full test suite, a migration), run it as

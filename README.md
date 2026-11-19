@@ -86,8 +86,8 @@ job that reports in the morning, are in [Recipes](docs/recipes.md).
   others use too, such as a test database, a checkout, a port or a deploy, so they don't collide.
   Name it like an agent (`testdb@desk.local`): that machine keeps its leases, and an agent that
   finds it taken is told who has it, why and for how long, and can ask to hear when it's free.
-  In Claude Code a lease is renewed while its session keeps working (other agents claim it again to
-  renew it), and it ends when it's released, when its session goes, when it runs out, or after
+  In Claude Code and Codex a lease is renewed while its session keeps working (other agents claim it
+  again to renew it), and it ends when it's released, when its session goes, when it runs out, or after
   4 hours at most. A session that restarts keeps its leases. Long unattended jobs use
   `natter lease run testdb -- <command>`, which holds the lease exactly as long as the command runs.
   Leases are advisory; a tool that wants to enforce them can check with `natter lease check`.

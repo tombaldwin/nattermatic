@@ -31,6 +31,7 @@ const LOST_MS = Number(process.env.NATTERMATIC_CODEX_LOST_MS) || 10 * 60_000
 const MAX_LOG = 64 * 1024
 // what Codex shows for the hook when it asks the user to trust it
 const HOOK_NAME = 'nattermatic: wake this session when another agent messages it'
+const BEAT_NAME = "nattermatic: renew this session's leases while it works"
 
 export const codexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
 export const codexConfigFile = () => path.join(codexHome(), 'config.toml')
@@ -44,6 +45,13 @@ const tq = (/** @type {string} */ s) => JSON.stringify(s)      // a TOML basic s
 
 /** The hook's entry. Codex asks the user to trust it again whenever it changes. */
 const hookEntry = () => ['[[hooks.SessionStart]]', '[[hooks.SessionStart.hooks]]', 'type = "command"', `command = ${tq(hookCmd())}`, 'timeout = 10', `statusMessage = ${tq(HOOK_NAME)}`].join('\n')
+/** The heartbeat's command: a plain command, as Codex runs it in the user's own shell (fish, say). */
+export const beatCmd = () => [...selfCmd().map(a => a.startsWith('-') ? a : sq(a)), 'codex-beat'].join(' ')
+/**
+ * The heartbeat, after every tool call (MCP tools too, from Codex 0.124): a session's leases are
+ * renewed while it works (#8). In the background, so Codex never waits for it.
+ */
+const beatEntry = () => ['[[hooks.PostToolUse]]', '[[hooks.PostToolUse.hooks]]', 'type = "command"', `command = ${tq(beatCmd())}`, 'timeout = 5', 'async = true', `statusMessage = ${tq(BEAT_NAME)}`].join('\n')
 
 /** What setup puts in config.toml. @param {{ hook: boolean }} o */
 export function configBlock({ hook }) {
@@ -57,7 +65,7 @@ export function configBlock({ hook }) {
     // shell started it, so a NATTERMATIC_NAME there would name every session
     'env = { NATTERMATIC_NAME = "" }',
     ...READ_TOOLS.flatMap(t => ['', `[mcp_servers.nattermatic.tools.${t}]`, 'approval_mode = "approve"']),
-    ...(hook ? ['', hookEntry()] : []),
+    ...(hook ? ['', hookEntry(), '', beatEntry()] : []),
     END,
   ].join('\n')
 }
@@ -79,7 +87,7 @@ export function withoutBlock(text) {
 export function clashes(text) {
   const out = []
   if (/^\s*\[\s*mcp_servers\s*\.\s*"?nattermatic"?\s*[\].]/m.test(text) || /^\s*mcp_servers\s*=/m.test(text)) out.push('a nattermatic MCP server of its own')
-  if (/^\s*SessionStart\s*=/m.test(text) || /^\s*hooks\s*=/m.test(text)) out.push('hooks written inline (SessionStart = [...])')
+  if (/^\s*(SessionStart|PostToolUse)\s*=/m.test(text) || /^\s*hooks\s*=/m.test(text)) out.push('hooks written inline (SessionStart = [...])')
   return out
 }
 
@@ -115,7 +123,7 @@ export function installCodex() {
   const hook = canQueue(which('codex'))
   const next = withBlock(text, configBlock({ hook }))
   if (next !== was) write(file, next)
-  return { hook, approve: hook && !text.includes(hookEntry()) }
+  return { hook, approve: hook && !(text.includes(hookEntry()) && text.includes(beatEntry())) }
 }
 
 export function removeCodex() {
@@ -160,6 +168,28 @@ export async function runCodexHook() {
     { detached: true, stdio: 'ignore' })
   child.on('error', () => {})
   child.unref()
+  return 0
+}
+
+/**
+ * `natter codex-beat`: Codex's heartbeat hook, after each tool call. Renews the session's leases, and
+ * does nothing (without asking the node) unless some session on this machine holds one.
+ */
+export async function runCodexBeat() {
+  try {
+    const home = homeDir()
+    if (fs.existsSync(path.join(home, 'disabled')) || !fs.readdirSync(home).some(f => f.startsWith('hold-'))) return 0
+    let input = ''
+    for await (const c of process.stdin) input += c
+    /** @type {any} */
+    const d = JSON.parse(input)
+    if (typeof d?.cwd !== 'string') return 0
+    let cwd = d.cwd
+    try { cwd = fs.realpathSync(cwd) } catch {}
+    // the app-server that ran this hook started the session's adapter too (a shell may be in between)
+    const pids = [process.ppid, ...parents(process.ppid, 2)]
+    await new Local(loadConfig()).req('POST', '/local/lease', { op: 'beat', pids, cwd }, '', 1500)
+  } catch {}
   return 0
 }
 

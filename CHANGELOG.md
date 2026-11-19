@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Codex renews leases while a session works**, as Claude Code does: setup adds a hook after each
+  tool call (Codex 0.124 or newer runs it for MCP tools too). It runs in the background and does
+  nothing unless the session holds a lease. Codex asks you to trust the new hook once.
 - **Security:** a node reads nothing a client sends until it has proved its key, except a new
   machine's first hello, which is limited to the size of a member list (2 MB, down from 8 MB).
 - **Fix:** a message sent, or any other command or tool used, just as this machine's node stopped

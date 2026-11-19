@@ -129,6 +129,10 @@ async function main() {
       const { runLease } = await import('../src/lease-cli.js')
       process.exit(await runLease(pos, flags, client))
     }
+    case 'codex-beat': {                        // run by Codex's heartbeat hook (PostToolUse)
+      const { runCodexBeat } = await import('../src/codex.js')
+      process.exit(await runCodexBeat())
+    }
     case 'codex-hook': {                        // run by Codex's SessionStart hook
       const { runCodexHook } = await import('../src/codex.js')
       process.exit(await runCodexHook())

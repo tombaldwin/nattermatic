@@ -104,8 +104,15 @@ export function createSessions({ q, msgRow, tx, now, safe, host }) {
     return { name, reconnected: !!reconnecting }
   }
 
-  /** The session whose owner is the first of `pids` (nearest first) to own one. @param {number[]} pids */
-  const ownedBy = pids => pids.map(pid => [...map].find(([, x]) => x.owner === pid)).find(Boolean)
+  /**
+   * The session these processes belong to: by process, nearest first (a Claude started from inside
+   * another Claude's session belongs to the inner one). Codex starts every session's adapter from one
+   * shared app-server, so a Codex hook also says which folder: the newest session there.
+   * @param {number[]} pids @param {string | null} [cwd]
+   */
+  const ownedBy = (pids, cwd = null) => cwd
+    ? [...map].reverse().find(([, x]) => pids.includes(x.owner) && x.cwd === cwd)
+    : pids.map(pid => [...map].find(([, x]) => x.owner === pid)).find(Boolean)
 
   /**
    * The wait behind `natter wake`: answers once, when there's news. By process, nearest first: a
@@ -115,7 +122,7 @@ export function createSessions({ q, msgRow, tx, now, safe, host }) {
    * @param {Res} res @param {number[]} pids @param {string | null} cwd
    */
   function wait(res, pids, cwd) {
-    const found = cwd ? [...map].reverse().find(([, x]) => pids.includes(x.owner) && x.cwd === cwd) : ownedBy(pids)
+    const found = ownedBy(pids, cwd)
     if (!found) return false
     const [name, s] = found
     s.lastActive = now()                  // the hook waits again at each turn: the session is active

@@ -392,7 +392,7 @@ export const TOOLS = [
 
 /** @param {any} r @param {string} me */
 export function formatClaim(r, me) {
-  if (r.ok) return `${r.renewed ? 'Renewed' : 'Claimed'} ${r.resource} for ${me}: ${fmtLeft(r.lease.left_s * 1000)} unless renewed, and ${fmtLeft(r.lease.cap_s * 1000)} at most. In Claude Code it's renewed while you keep working; otherwise claim it again before it runs out. Release it when you're done.`
+  if (r.ok) return `${r.renewed ? 'Renewed' : 'Claimed'} ${r.resource} for ${me}: ${fmtLeft(r.lease.left_s * 1000)} unless renewed, and ${fmtLeft(r.lease.cap_s * 1000)} at most. In Claude Code and Codex it's renewed while you keep working; otherwise claim it again before it runs out. Release it when you're done.`
   const why = r.same_name ? ` That's an earlier session with your name: if it was you before a restart, claim with takeover: true.` : ` Don't use it.${r.notify ? ' You\'ll get a message when it\'s free.' : ' Use notify: true to hear when it\'s free, or ask its holder.'}`
   return `Not claimed: ${r.resource} is ${formatLease(r.lease)}.${why}`
 }

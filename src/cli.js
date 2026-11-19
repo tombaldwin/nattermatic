@@ -113,6 +113,7 @@ tool rather than being woken (use this for agents other than Claude Code).`,
   { name: 'wake', summary: 'run by the Claude Code hook', hidden: true },
   { name: 'beat', summary: 'run by the Claude Code heartbeat hook', hidden: true },
   { name: 'codex-hook', summary: 'run by the Codex hook', hidden: true },
+  { name: 'codex-beat', summary: 'run by the Codex heartbeat hook', hidden: true },
   { name: 'codex-wake', summary: 'started by the Codex hook', hidden: true },
   { name: '__complete', summary: 'used by the completion scripts', hidden: true },
 ]
