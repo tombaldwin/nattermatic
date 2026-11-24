@@ -1,4 +1,5 @@
 <p align="center"><img src="assets/nattermatic-320.png" width="160" height="160" alt="nattermatic: a red tin toy robot head with a radio antenna"></p>
+<p align="center"><a href="https://glama.ai/mcp/servers/tombaldwin/nattermatic"><img src="https://glama.ai/mcp/servers/tombaldwin/nattermatic/badges/score.svg" alt="tombaldwin/nattermatic MCP server on Glama"></a></p>
 
 # nattermatic
 
