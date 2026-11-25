@@ -41,7 +41,10 @@ export async function gather() {
   const others = listPrograms(homeDir()).filter(c => real(c.at(-1) ?? '') && real(c.at(-1) ?? '') !== f.self)
   // the natter on PATH too: an install older than this check never notes itself
   if (f.pathFile && f.pathFile !== f.self && !others.some(c => real(c.at(-1) ?? '') === f.pathFile)) others.push([f.pathFile])
-  f.installs = await Promise.all(others.map(async c => ({ file: real(c.at(-1) ?? ''), version: await versionOf(c) })))
+  // a launcher for this same install (the installer's wrapper in ~/.nattermatic/bin) says it runs this file
+  const asked = await Promise.all(others.map(async c => ({ c, p: await askProgram(c) })))
+  f.installs = await Promise.all(asked.filter(({ p }) => !p?.file || real(p.file) !== f.self)
+    .map(async ({ c, p }) => ({ file: real(c.at(-1) ?? ''), version: p?.version ?? await plainVersion(c) })))
   let cfg
   try { cfg = loadConfig() } catch (e) { f.setupError = errMsg(e) }
   if (cfg) {
@@ -67,10 +70,8 @@ export async function gather() {
   return f
 }
 
-/** A program's version: asked as a node start asks it, or from `version` for one older than that. @param {string[]} cmd */
-async function versionOf(cmd) {
-  const p = await askProgram(cmd)
-  if (p) return p.version
+/** The version a program older than `version --json` prints for `version`, or empty. @param {string[]} cmd */
+async function plainVersion(cmd) {
   try { return (await promisify(execFile)(cmd[0], [...cmd.slice(1), 'version'], { timeout: 3000, encoding: 'utf8' })).stdout.trim().match(/^\d+\.\d+\.\d+\S*$/)?.[0] ?? '' } catch { return '' }
 }
 

@@ -41,7 +41,12 @@ check_prereqs() {
   if [ -z "$C" ]; then
     # run by Claude Code itself: it's there, just not on this shell's PATH
     [ -n "${CLAUDECODE:-}" ] && return 0
-    echo "nattermatic: Claude Code isn't installed. Install it first: https://claude.com/claude-code" >&2
+    # a Codex machine needs no Claude Code: setup adds nattermatic to Codex (codexPresent in src/codex.js)
+    if command -v codex >/dev/null 2>&1 || [ -d "${CODEX_HOME:-$HOME/.codex}" ]; then
+      echo "Claude Code isn't installed here, so nattermatic is set up for Codex."
+      return 0
+    fi
+    echo "nattermatic: neither Claude Code nor Codex is installed. Install one first: https://claude.com/claude-code" >&2
     echo "(For another MCP agent, set NATTERMATIC_SKIP_CHECKS=1.)" >&2
     exit 1
   fi

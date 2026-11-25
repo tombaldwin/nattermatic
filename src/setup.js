@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import net from 'node:net'
-import { writeConfig, readConfigFile, loadConfig, homeDir, ensureHomeDir, normHost, machineName, detectHost, validAddr, readIdentity, writeIdentity, keyPath, certPath, rosterPath, errMsg, sleep, writeAtomic } from './config.js'
+import { writeConfig, readConfigFile, loadConfig, homeDir, ensureHomeDir, normHost, machineName, detectHost, validAddr, readIdentity, writeIdentity, keyPath, certPath, rosterPath, errMsg, errCode, sleep, writeAtomic } from './config.js'
 import { newIdentity, certDer, shortFp, fingerprint } from './cert.js'
 import { Roster } from './roster.js'
 import { leaseTables } from './leases.js'
@@ -198,17 +198,28 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
   const local = new Local(cfg)
   if (!noService) {
     try {
-      installService()
+      const { lingers } = installService()
       ok('background node installed (starts at login, restarts if it dies)')
+      if (!lingers) warn(`the node stops when you log out of this machine. To keep it running, run  sudo loginctl enable-linger ${os.userInfo().username}`)
       for (let i = 0; i < 50 && !await local.health(); i++) await sleep(100)   // let the service win the port
-    } catch (e) { warn(`could not install background service (${errMsg(e)}); sessions will start the node on demand`) }
+    } catch (e) {
+      // systemd is there but this shell can't reach its user services (after su or sudo -u, say): a real login can
+      const hint = /\bbus\b/i.test(errMsg(e)) ? ' Run natter setup again from a desktop or SSH login, where systemd\'s user services work, to fix it' : ''
+      warn(`no background service (${errMsg(e)}): this machine gets messages only while a Claude Code or Codex session, or a natter command, is running.${hint}`)
+    }
   }
   let running = false
   try { const h = await local.ensureNode(); ok(`node running on port ${cfg.port} (pid ${'pid' in h ? h.pid : '?'})`); running = true }
   catch (e) { warn(errMsg(e)) }
 
+  if (isWsl()) warn(`this is WSL, which Windows keeps behind its own network: other machines usually can't reach it (not tested). Tailscale inside WSL, or WSL's mirrored networking with port ${cfg.port} open in Windows Firewall, may get round it`)
+
   let broken = null
-  if (!noClaude) {
+  // a machine with Codex and no Claude Code: nothing to do for Claude Code, and nothing wrong
+  // (CLAUDECODE: run from a Claude Code session, which is there even if this shell can't find claude)
+  const codexOnly = !claudeBin() && !process.env.CLAUDECODE && !noCodex && codexPresent()
+  if (!noClaude && codexOnly) ok('Claude Code isn\'t installed here: skipped (run natter setup again if you install it)')
+  else if (!noClaude) {
     broken = registerClaude() || checkAdapter()
     if (broken) warn(`Claude Code can't start nattermatic, so sessions won't have it until this is fixed: ${broken}`)
   }
@@ -219,7 +230,7 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
       ok(`Codex: nattermatic added to ${codexConfigFile()}`)
       if (!c.hook) codexNote = '\nCodex sessions read messages with the inbox tool. Update Codex (it needs `codex queue`) and run natter setup again, so they\'re woken too.'
       else if (c.approve) codexNote = '\nCodex asks you to trust nattermatic\'s hook the next time it starts: trust it, so Codex sessions are woken by messages.'
-    } catch (e) { warn(`Codex: ${errMsg(e)}`) }
+    } catch (e) { warn(`Codex: ${errMsg(e)}`); if (codexOnly) broken = `Codex: ${errMsg(e)}` }
   }
   const binDir = process.env.NATTERMATIC_BIN_DIR
   if (!noAlias) {
@@ -237,16 +248,19 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
       if (old) console.log(`  (an earlier npm install is still at ${old}; new terminals use the app. Remove the old one with: npm uninstall -g ${pkg})`)
     }
   }
+  const joinNote = codexOnly
+    ? 'New Codex sessions join by themselves; start any open one again to join.'
+    : `In any Claude Code session that's already running, type /reload-plugins to join
+(or start it again: \`claude --continue\` picks up where it left off). New sessions join by themselves.`
   console.log(`
-${broken ? 'Done, but see the warning above.' : 'Done.'} In any Claude Code session that's already running, type /reload-plugins to join
-(or start it again: \`claude --continue\` picks up where it left off). New sessions join by themselves.
+${broken ? 'Done, but see the warning above.' : 'Done.'} ${joinNote}
 Agents address each other as name@host, e.g. "send the test results to reviewer@laptop.local".
 Name a session with NATTERMATIC_NAME=<name> (default: the project folder name).${codexNote}`)
   if (banner) console.log(`\n${banner}`)
   if (running && invite) {
     try { console.log(`\n${invitePrompt(await local.req('POST', '/local/invite'))}`) }
     catch (e) { warn(`could not create an invite (${errMsg(e)}); run \`natter invite\` later`) }
-  } else console.log(`\nTo add another machine, ask Claude to make an invite (or run \`natter invite\`${running ? '' : ' once the node is running'}).`)
+  } else console.log(`\nTo add another machine, ask your agent to make an invite (or run \`natter invite\`${running ? '' : ' once the node is running'}).`)
 }
 
 /**
@@ -380,7 +394,7 @@ function registerClaude() {
   /** @type {string | null} */
   let failed = null
   for (const acct of claudeAccounts()) {
-    const label = acct.dir ? `${acct.alias} (${acct.dir})` : 'default account'
+    const label = acct.dir ? `${acct.alias} (${acct.dir})` : `${acct.alias} (the default account)`
     try { register(acct.dir); ok(`enabled for Claude account: ${label}`) }
     catch (e) { warn(`could not enable for ${label}: ${errMsg(e)}`); failed ||= `could not enable for ${label}` }
   }
@@ -390,7 +404,24 @@ function registerClaude() {
   return failed
 }
 
+/**
+ * The line of systemctl's stderr that says what went wrong: the last one, as `enable --now` reports
+ * the link it made ("Created symlink ...") before a start that fails.
+ * @param {string} stderr
+ */
+export function systemctlError(stderr) {
+  return stderr.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('Created symlink')).at(-1) ?? ''
+}
+
+/** Running under Windows Subsystem for Linux? */
+export function isWsl() {
+  if (process.platform !== 'linux') return false
+  if (process.env.WSL_DISTRO_NAME) return true
+  try { return /microsoft|wsl/i.test(fs.readFileSync('/proc/version', 'utf8')) } catch { return false }
+}
+
 // ---------- services ----------
+/** @returns {{ lingers: boolean }} whether the node keeps running after logout */
 function installService() {
   const cfgDir = ensureHomeDir()
   noteProgram(cfgDir, selfCmd())     // so a node an older install starts is this one's (#4)
@@ -421,7 +452,7 @@ function installService() {
     spawnSync('launchctl', ['bootout', `${dom}/${LABEL}`], { stdio: 'ignore' })
     for (let i = 0; i < 50 && spawnSync('launchctl', ['print', `${dom}/${LABEL}`], { stdio: 'ignore' }).status === 0; i++) sleepSync(100)
     for (let i = 0; ; i++) {
-      try { execFileSync('launchctl', ['bootstrap', dom, plist], { stdio: 'pipe' }); return } catch (e) {
+      try { execFileSync('launchctl', ['bootstrap', dom, plist], { stdio: 'pipe' }); return { lingers: true } } catch (e) {
         if (i >= 9) throw e
         sleepSync(500)
       }
@@ -444,10 +475,19 @@ StandardError=append:${logFile.replace(/%/g, '%%')}
 [Install]
 WantedBy=default.target
 `)
-    execFileSync('systemctl', ['--user', 'daemon-reload'])
-    execFileSync('systemctl', ['--user', 'enable', '--now', UNIT])
-    spawnSync('loginctl', ['enable-linger', os.userInfo().username], { stdio: 'ignore' }) // keep running when logged out
-    return
+    // systemctl's own errors ("Failed to connect to bus") go into the one warning, not the terminal
+    const systemctl = (/** @type {string[]} */ ...args) => {
+      const r = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' })
+      if (r.error) throw new Error(errCode(r.error) === 'ENOENT' ? 'systemd isn\'t running here' : errMsg(r.error))
+      if (r.status !== 0) throw new Error(`systemctl: ${systemctlError(r.stderr) || `${args[0]} failed`}`)
+    }
+    systemctl('daemon-reload')
+    systemctl('enable', '--now', UNIT)
+    // keep running when logged out: allowed for your own user on most desktops, needs sudo on many servers
+    const user = os.userInfo().username
+    spawnSync('loginctl', ['enable-linger', user], { stdio: 'ignore' })
+    // logind's own record, there whether or not this shell has a login session
+    return { lingers: fs.existsSync(`/var/lib/systemd/linger/${user}`) }
   }
   throw new Error(`unsupported platform ${process.platform}`)
 }

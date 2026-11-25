@@ -55,6 +55,9 @@ test("each program is asked its version when a node starts: an install downgrade
     assert.equal(await askProgram(old), null)
     assert.equal(await askProgram(broken), null)
     assert.equal(await askProgram(['/no/such/natter']), null)
+    // one that says which file it runs (from 0.4.3): doctor tells a launcher of this install from another install
+    const wrapper = fake(dir, 'wrapper', '{"version":"0.4.3","proto":1,"file":"/x/bin/natter.js"}')
+    assert.deepEqual(await askProgram(wrapper), { cmd: wrapper, version: '0.4.3', proto: 1, file: '/x/bin/natter.js' })
     for (const c of [self, newer, old, broken]) noteProgram(dir, c)
 
     assert.deepEqual((await chooseProgram(dir, self, me))?.cmd, newer)
@@ -96,4 +99,11 @@ test('under the service, a stop while the chosen node starts is passed on, and t
     assert.equal(r.up, false)
     assert.equal(process.listenerCount('SIGTERM'), before, 'its handlers are gone, so a later stop stops this process')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("setup reports systemctl's error, not the link it made first", async () => {
+  const { systemctlError } = await import('../../src/setup.js')
+  assert.equal(systemctlError('Created symlink /a → /b.\nJob for nattermatic.service failed because the control process exited.\n'), 'Job for nattermatic.service failed because the control process exited.')
+  assert.equal(systemctlError('Failed to connect to bus: No medium found\n'), 'Failed to connect to bus: No medium found')
+  assert.equal(systemctlError('Created symlink /a → /b.\n'), '')
 })

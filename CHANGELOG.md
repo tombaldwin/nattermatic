@@ -9,6 +9,16 @@
   machine's first hello, which is limited to the size of a member list (2 MB, down from 8 MB).
 - **Fix:** a message sent, or any other command or tool used, just as this machine's node stopped
   failed with "cannot reach the nattermatic node". It now starts a node and goes through.
+- **A machine with Codex and no Claude Code installs without being told to.** The installer no
+  longer asks for Claude Code there (`NATTERMATIC_SKIP_CHECKS=1` isn't needed), and setup no longer
+  ends with a warning about Claude Code and a reminder to type `/reload-plugins`.
+- **Fix:** `natter doctor` said nattermatic was installed more than once on every install that
+  uses its own Node.js (all Linux installs, and a Mac that fell back to npm), counting the
+  installer's `natter` launcher as a second install.
+- **Linux:** when setup can't install the background service, it says so in one line, without
+  systemctl's own errors, and says what that means and how to fix it. It warns when the node would
+  stop at logout, and says how to keep it running. On WSL, it warns that other machines usually
+  can't reach it.
 
 ## 0.4.2 — 2026-11-18
 

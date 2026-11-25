@@ -15,7 +15,7 @@ const FILE = 'programs.json'
 const MAX = 8
 export const ASK_TIMEOUT_MS = 3000
 
-/** @typedef {{ cmd: string[], version: string, proto: number }} Program */
+/** @typedef {{ cmd: string[], version: string, proto: number, file?: string }} Program */
 
 /** A program's identity is its file (the node binary that runs it may move, the script doesn't). @param {string[]} cmd */
 const key = cmd => cmd.at(-1) ?? ''
@@ -53,7 +53,7 @@ export function askProgram(cmd) {
       if (err) return resolve(null)
       try {
         const v = JSON.parse(out)
-        resolve(typeof v?.version === 'string' && Number.isInteger(v?.proto) ? { cmd, version: v.version, proto: v.proto } : null)
+        resolve(typeof v?.version === 'string' && Number.isInteger(v?.proto) ? { cmd, version: v.version, proto: v.proto, ...(typeof v.file === 'string' && v.file ? { file: v.file } : {}) } : null)
       } catch { resolve(null) }
     })
   })

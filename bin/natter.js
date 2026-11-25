@@ -198,7 +198,11 @@ async function main() {
     case 'version': {
       if (!flags.json) return console.log(VERSION)
       const { PROTO } = await import('../src/tls.js')
-      return console.log(JSON.stringify({ version: VERSION, proto: PROTO }))
+      const { BIN } = await import('../src/self.js')
+      // file: what this is underneath any launcher, so doctor can tell a wrapper from another install
+      let file = BIN
+      try { file = (await import('node:fs')).realpathSync(file) } catch {}
+      return console.log(JSON.stringify({ version: VERSION, proto: PROTO, file }))
     }
     case 'help': {
       if (!pos.length) return console.log(mainHelp(VERSION))
