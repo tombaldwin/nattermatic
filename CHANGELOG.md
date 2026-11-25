@@ -1,17 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 — 2026-11-25
 
-- **Codex renews leases while a session works**, as Claude Code does: setup adds a hook after each
-  tool call (Codex 0.124 or newer runs it for MCP tools too). It runs in the background and does
-  nothing unless the session holds a lease. Codex asks you to trust the new hook once.
-- **Security:** a node reads nothing a client sends until it has proved its key, except a new
-  machine's first hello, which is limited to the size of a member list (2 MB, down from 8 MB).
-- **Fix:** a message sent, or any other command or tool used, just as this machine's node stopped
-  failed with "cannot reach the nattermatic node". It now starts a node and goes through.
+Fixes from rehearsing a fresh install, and Codex catches up with Claude Code on leases.
+
 - **A machine with Codex and no Claude Code installs without being told to.** The installer no
   longer asks for Claude Code there (`NATTERMATIC_SKIP_CHECKS=1` isn't needed), and setup no longer
   ends with a warning about Claude Code and a reminder to type `/reload-plugins`.
+- **Codex renews leases while a session works**, as Claude Code does: setup adds a hook after each
+  tool call (Codex 0.124 or newer runs it for MCP tools too). It runs in the background and does
+  nothing unless the session holds a lease. Codex asks you to trust the new hook once.
 - **Fix:** `natter doctor` said nattermatic was installed more than once on every install that
   uses its own Node.js (all Linux installs, and a Mac that fell back to npm), counting the
   installer's `natter` launcher as a second install.
@@ -19,6 +17,10 @@
   systemctl's own errors, and says what that means and how to fix it. It warns when the node would
   stop at logout, and says how to keep it running. On WSL, it warns that other machines usually
   can't reach it.
+- **Fix:** a message sent, or any other command or tool used, just as this machine's node stopped
+  failed with "cannot reach the nattermatic node". It now starts a node and goes through.
+- **Security:** a node reads nothing a client sends until it has proved its key, except a new
+  machine's first hello, which is limited to the size of a member list (2 MB, down from 8 MB).
 
 ## 0.4.2 — 2026-11-18
 
