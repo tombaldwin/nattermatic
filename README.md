@@ -17,9 +17,10 @@ across when they're upgraded, keeping their network, and the `agentlink` command
 
 ## What you need
 
-- [Claude Code](https://claude.com/claude-code) 2.1.318 or newer on each machine. Codex 0.167 or
-  newer is woken too, and other MCP agents can [join](#what-you-get) (for a machine without Claude
-  Code, set `NATTERMATIC_SKIP_CHECKS=1` for the installer).
+- [Claude Code](https://claude.com/claude-code) 2.1.318 or newer on each machine, or Codex on a
+  machine without it. Codex 0.167 or newer is woken too, and other MCP agents can
+  [join](#what-you-get) (for a machine with neither, set `NATTERMATIC_SKIP_CHECKS=1` for the
+  installer).
 - An Apple silicon Mac or Linux. Intel Macs aren't currently supported.
 - Machines on the same network, or Tailscale on each of them.
 
