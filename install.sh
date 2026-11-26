@@ -13,7 +13,11 @@ set -e
 for v in $(env | sed -n 's/^AGENTLINK_\([A-Z0-9_]*\)=.*/\1/p'); do
   eval "[ -n \"\${NATTERMATIC_$v+x}\" ] || { NATTERMATIC_$v=\"\$AGENTLINK_$v\"; export NATTERMATIC_$v; }"
 done
-PKG="${NATTERMATIC_PKG:-nattermatic}"
+# The release this installer installs: the app, the npm package and Node.js below are all pinned to
+# it, so the installer from a release's tag installs exactly that release. Bumped with the version
+# (docs/releasing.md; test/unit/manifests.test.js checks it).
+RELEASE=0.4.4
+PKG="${NATTERMATIC_PKG:-nattermatic@$RELEASE}"
 NATTERMATIC_ORIG_PATH="$PATH"; export NATTERMATIC_ORIG_PATH
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -68,7 +72,7 @@ chmod 700 "$AL"
 # The Apple Developer team that signs nattermatic.app: the app is installed only with its signature
 TEAM="${NATTERMATIC_TEAM:-CZ63J37ULN}"
 APPS="$HOME/Applications"
-RELEASES=https://github.com/tombaldwin/nattermatic/releases/latest/download
+RELEASES=https://github.com/tombaldwin/nattermatic/releases/download/v$RELEASE
 
 # Fetch from the inviting machine, pinned to its invite key (-k only skips CA checks; curl still
 # refuses any key but the pinned one). The URL holds the invite token, so it goes to curl in a
@@ -84,7 +88,7 @@ fetch_invite() {
 
 # nattermatic.app (Apple silicon): as a signed app, macOS asks for Local Network access by name and
 # the permission covers nattermatic only. From the inviting machine when it runs the app, else from
-# the latest GitHub release. Returns 1 if no app is available (the npm install is used instead).
+# this installer's GitHub release. Returns 1 if no app is available (the npm install is used instead).
 # This function runs as an if condition, where set -e is off, so each step says what happens if it fails.
 APP_EXE="$APPS/nattermatic.app/Contents/MacOS/nattermatic"
 no_app() {
@@ -120,7 +124,7 @@ install_app() {
     BAR=-s; [ -t 2 ] && BAR=-#
     if ! curl -fSL "$BAR" "$RELEASES/nattermatic-macos-arm64.zip" -o "$TMP/app.zip" ||
        ! curl -fsSL "$RELEASES/nattermatic-macos-arm64.zip.sha256" -o "$TMP/app.sha256"; then
-      no_app "from the latest release" && link_app && return 0
+      no_app "from release $RELEASE" && link_app && return 0
       return 1
     fi
     [ "$(awk '{print $1}' "$TMP/app.sha256")" = "$(shasum -a 256 "$TMP/app.zip" | awk '{print $1}')" ] ||
@@ -167,9 +171,12 @@ node_ok() {
 
 PRIV="$AL/node"
 USE_PRIV=0
+# the private Node.js this release uses, checked against its checksums as written below (from
+# nodejs.org's SHASUMS256.txt)
+NODE=v24.22.3
 if node_ok; then
   :
-elif [ -x "$PRIV/bin/node" ] && "$PRIV/bin/node" -e 0 2>/dev/null; then
+elif [ -x "$PRIV/bin/node" ] && [ "$("$PRIV/bin/node" --version 2>/dev/null)" = "$NODE" ]; then
   export PATH="$PRIV/bin:$PATH"; USE_PRIV=1
 else
   case "$PLATFORM" in
@@ -183,12 +190,15 @@ else
     exit 1
   fi
   echo "Installing a private Node.js runtime in $PRIV (your system Node, if any, is untouched)..."
-  DIST=https://nodejs.org/dist/latest-v24.x
-  curl -fsSL "$DIST/SHASUMS256.txt" -o "$TMP/SUMS"
-  FILE=$(awk '{print $2}' "$TMP/SUMS" | grep -E "^node-v[0-9.]+-$P\.tar\.gz$" | head -1)
-  [ -n "$FILE" ] || { echo "nattermatic: could not find a Node.js download for $P"; exit 1; }
-  curl -fsSL "$DIST/$FILE" -o "$TMP/$FILE"
-  WANT=$(awk -v f="$FILE" '$2==f {print $1}' "$TMP/SUMS")
+  case "$P" in
+    darwin-arm64) WANT=ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd ;;
+    darwin-x64) WANT=977614af0504c81045e7fd85596dbca0e5f951b96681516dadafedcca8c447f7 ;;
+    linux-arm64) WANT=261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8 ;;
+    linux-x64) WANT=061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2 ;;
+    *) echo "nattermatic: no Node.js checksum for $P"; exit 1 ;;
+  esac
+  FILE=node-$NODE-$P.tar.gz
+  curl -fsSL "https://nodejs.org/dist/$NODE/$FILE" -o "$TMP/$FILE"
   GOT=$( (shasum -a 256 "$TMP/$FILE" 2>/dev/null || sha256sum "$TMP/$FILE") | awk '{print $1}')
   [ "$WANT" = "$GOT" ] || { echo "nattermatic: Node.js download failed its checksum — aborting"; exit 1; }
   rm -rf "$PRIV"; mkdir -p "$PRIV"

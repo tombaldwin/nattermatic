@@ -39,3 +39,20 @@ test('plugins installed as agentlink, before the rename, still find theirs in th
   assert.equal(old.source, market.plugins[0].source)
   assert.equal(old.version, pkg.version)
 })
+
+test('the installer and the skill install this release, and nothing unpinned', () => {
+  const sh = fs.readFileSync(new URL('../../install.sh', import.meta.url), 'utf8')
+  assert.equal(/^RELEASE=(\S+)$/m.exec(sh)?.[1], pkg.version, 'RELEASE in install.sh')
+  assert.doesNotMatch(sh, /releases\/latest|latest-v\d|nodejs\.org\/dist\/latest/, 'the app and Node.js come from one release, not the latest')
+  assert.match(sh, /PKG="\$\{NATTERMATIC_PKG:-nattermatic@\$RELEASE\}"/, 'the npm package is this release')
+  assert.match(sh, /^RELEASES=https:\/\/github\.com\/tombaldwin\/nattermatic\/releases\/download\/v\$RELEASE$/m, 'the app is this release\'s')
+  assert.match(sh, /^NODE=v\d+\.\d+\.\d+$/m, 'one Node.js version')
+  for (const p of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) assert.match(sh, new RegExp(`^ {4}${p}\\) WANT=[0-9a-f]{64} ;;$`, 'm'), `a Node.js checksum for ${p}`)
+  const skill = fs.readFileSync(new URL('../../plugins/nattermatic/skills/nattermatic/SKILL.md', import.meta.url), 'utf8')
+  const line = `https://raw.githubusercontent.com/tombaldwin/nattermatic/v${pkg.version}/install.sh | sh`
+  const readme = fs.readFileSync(new URL('../../plugins/nattermatic/README.md', import.meta.url), 'utf8')
+  for (const [name, text] of [['SKILL.md', skill], ['the plugin README', readme]]) {
+    assert.ok(text.includes(line), `${name} runs the installer from this release's tag`)
+    assert.doesNotMatch(text.replace(line, ''), /nattermatic\/v\d+\.\d+\.\d+\/install\.sh/, `${name} names no other release`)
+  }
+})

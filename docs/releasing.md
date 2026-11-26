@@ -1,9 +1,11 @@
 # Releasing
 
 A release is a GitHub Release with the macOS app (signed with Developer ID, notarized) and the npm
-package. The installer fetches the app from the latest **published** release
-(`releases/latest/download/nattermatic-macos-arm64.zip`), so publishing a release changes what new
-Macs install.
+package. The installer is pinned to one release (`RELEASE` in `install.sh`): it installs that
+release's app (`releases/download/vX.Y.Z/nattermatic-macos-arm64.zip`), `nattermatic@X.Y.Z` from npm,
+and the Node.js version written in it, checked against the checksums written beside it. The skill
+runs the installer from the release's tag, and nattermatic.com/install.sh serves the one on `main`,
+so pushing the bumped `main` is what changes what new machines install.
 
 ## One-time setup
 
@@ -58,20 +60,27 @@ first version (a 0.0.1 placeholder, when the name was reserved) was published by
 ## Each release
 
 1. Set the version in `package.json`, `src/config.js` (`VERSION`), `server.json` (both
-   `version`s), `plugins/nattermatic/.claude-plugin/plugin.json` and
-   `.claude-plugin/marketplace.json`, and date its section in `CHANGELOG.md`
-   (`## X.Y.Z — YYYY-MM-DD`). `npm run test:unit` fails if one is left behind.
-2. Commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+   `version`s), `plugins/nattermatic/.claude-plugin/plugin.json`,
+   `.claude-plugin/marketplace.json`, `install.sh` (`RELEASE`) and the install lines in
+   `plugins/nattermatic/skills/nattermatic/SKILL.md` and `plugins/nattermatic/README.md`, and date its section in `CHANGELOG.md`
+   (`## X.Y.Z — YYYY-MM-DD`). `npm run test:unit` fails if one is left behind. To move to a newer
+   Node.js, change `NODE` in `install.sh` and the four checksums from that version's
+   `SHASUMS256.txt` on nodejs.org.
+2. Commit, then tag and push **only the tag**: `git tag vX.Y.Z && git push origin vX.Y.Z`. Don't push
+   `main` yet: its installer would ask for a release and an npm version that don't exist until step 5.
 3. The **Release** workflow builds, signs, notarizes and staples the app, runs the end-to-end tests
-   against it, and creates a **draft** release with the CHANGELOG section as its notes.
-4. Check the draft, then publish it (`gh release edit vX.Y.Z --draft=false --latest`). New installs
-   on Apple silicon Macs get this app from then on.
+   against it, and creates a **draft** release with the CHANGELOG section as its notes. **CI** runs
+   on the tag too (Linux, Node 22, the installer and shellcheck).
+4. Once CI has passed, check the draft, then publish it (`gh release edit vX.Y.Z --draft=false --latest`). Its files
+   are downloadable from then on, but new installs only change at step 6.
 5. Publishing the release runs the workflow again, which publishes the package attached to the
    release to npm, then `server.json` to the official MCP Registry. Check them with
    `npm view nattermatic version` and
    `curl -s 'https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.tombaldwin/nattermatic'`. Publish the release
    with your own account (the web page or `gh`): GitHub doesn't start workflows for a release
    published by a workflow's own token.
+6. Once npm serves the version, push `main` (`git push origin main`). nattermatic.com/install.sh
+   and the plugin's skill install the new release from then on.
 
 The bundle ID (`io.github.tombaldwin.nattermatic`, in `scripts/build-app.mjs`) must never change:
 macOS ties each user's Local Network permission to it.

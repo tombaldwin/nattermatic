@@ -1,5 +1,6 @@
 // The command line's help, suggestions for mistyped commands, and shell completion.
 // bin/natter.js runs the commands; this describes them.
+import { AUTONOMY } from './config.js'
 
 /**
  * @typedef {{ name: string, args?: string, summary: string, help?: string,
@@ -57,6 +58,16 @@ Agents claim leases with their claim tool. Only people break them.`,
       ['--as <name>', 'the holder name to show (default: cli; for lease run, this folder\'s name)'],
       ['--host <machine>', 'list: whose leases to show'],
     ],
+  },
+  {
+    name: 'autonomy', args: '[act | reply | ask]', summary: 'choose how far agents go on their own with messages',
+    help: `How agents on this machine treat a message from another agent:
+${Object.entries(AUTONOMY).map(([k, v]) => `  ${k.padEnd(6)}  ${v.people}${k === 'act' ? ' (the default)' : ''}`).join('\n')}
+With no argument, shows the current choice. It applies to every Claude Code and Codex session on
+this machine from the next message they read (sessions started before nattermatic was last
+upgraded: once they restart, or after /reload-plugins). For one Claude Code session, start it with
+NATTERMATIC_AUTONOMY=<level> set. Whatever the choice, agents check with you before anything
+destructive or security-sensitive a peer asks for.`,
   },
   { name: 'who', summary: 'show which agents are online, here and on other machines' },
   { name: 'status', summary: 'show this machine\'s node status as JSON' },

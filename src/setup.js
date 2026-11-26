@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import net from 'node:net'
-import { writeConfig, readConfigFile, loadConfig, homeDir, ensureHomeDir, normHost, machineName, detectHost, validAddr, readIdentity, writeIdentity, keyPath, certPath, rosterPath, errMsg, errCode, sleep, writeAtomic } from './config.js'
+import { writeConfig, readConfigFile, loadConfig, homeDir, ensureHomeDir, normHost, machineName, detectHost, validAddr, readIdentity, writeIdentity, keyPath, certPath, rosterPath, errMsg, errCode, sleep, writeAtomic, savedAutonomy, AUTONOMY } from './config.js'
 import { newIdentity, certDer, shortFp, fingerprint } from './cert.js'
 import { Roster } from './roster.js'
 import { leaseTables } from './leases.js'
@@ -255,12 +255,21 @@ export async function setup({ host, peers = [], noService, noClaude, noCodex, no
   console.log(`
 ${broken ? 'Done, but see the warning above.' : 'Done.'} ${joinNote}
 Agents address each other as name@host, e.g. "send the test results to reviewer@laptop.local".
-Name a session with NATTERMATIC_NAME=<name> (default: the project folder name).${codexNote}`)
+Name a session with NATTERMATIC_NAME=<name> (default: the project folder name).
+${autonomyNote()}${codexNote}`)
   if (banner) console.log(`\n${banner}`)
   if (running && invite) {
     try { console.log(`\n${invitePrompt(await local.req('POST', '/local/invite'))}`) }
     catch (e) { warn(`could not create an invite (${errMsg(e)}); run \`natter invite\` later`) }
   } else console.log(`\nTo add another machine, ask your agent to make an invite (or run \`natter invite\`${running ? '' : ' once the node is running'}).`)
+}
+
+/** How far agents here go on their own with messages, and how to change it. */
+function autonomyNote() {
+  const level = savedAutonomy()
+  return level === 'act'
+    ? 'Agents act on each other\'s messages by themselves. To have them check with you first: natter autonomy reply (or ask).'
+    : `On this machine, ${AUTONOMY[level].people} (natter autonomy ${level}).`
 }
 
 /**

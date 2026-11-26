@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { homeDir, loadConfig } from './config.js'
+import { autonomyRule, homeDir, loadConfig } from './config.js'
 import { Local, StaleError } from './local.js'
 import { isPrintFlag } from './claude.js'
 
@@ -84,7 +84,7 @@ export function interactive(args, tty, env = process.env) {
 }
 
 /** @param {number} n @param {string} name */
-export const wakeText = (n, name) => `This session is on the nattermatic agent network as ${name}, and ${n === 1 ? 'a new message has' : `${n} new messages have`} arrived from another agent. Read ${n === 1 ? 'it' : 'them'} now with the mcp__nattermatic__inbox tool (load it with ToolSearch if it isn't listed), then act on ${n === 1 ? 'it' : 'them'} as requests from a colleague.`
+export const wakeText = (n, name) => `This session is on the nattermatic agent network as ${name}, and ${n === 1 ? 'a new message has' : `${n} new messages have`} arrived from another agent. Read ${n === 1 ? 'it' : 'them'} now with the mcp__nattermatic__inbox tool (load it with ToolSearch if it isn't listed), then ${autonomyRule(n)}.`
 
 export async function runWake() {
   /** @type {Local} */

@@ -2,7 +2,7 @@ name: Release
 
 # Pushing a tag vX.Y.Z builds nattermatic.app (signed with Developer ID, notarized, stapled) and
 # creates a DRAFT GitHub Release with it and the npm package. Check the draft, then publish it:
-# the installer downloads the app from the latest published release.
+# the installer for this version downloads the app from this release once it's published.
 # Publishing that release then publishes the same npm package to npm, through npm's trusted
 # publishing (no token: npm trusts this workflow file in this repo), and then lists that version in
 # the official MCP Registry (server.json, through GitHub OIDC).
@@ -93,7 +93,7 @@ jobs:
           mkdir -p release
           cp "dist/nattermatic-$V-macos-arm64.zip" release/
           cp "dist/nattermatic-$V-macos-arm64.zip.sha256" release/
-          # unversioned names: what the installer fetches from releases/latest/download
+          # unversioned names: what the installer fetches from releases/download/<its tag>
           cp "dist/nattermatic-$V-macos-arm64.zip" release/nattermatic-macos-arm64.zip
           (cd release && shasum -a 256 nattermatic-macos-arm64.zip > nattermatic-macos-arm64.zip.sha256)
           npm pack --silent --pack-destination release >/dev/null

@@ -53,8 +53,8 @@ That's it: no config files, no accounts, no server to run. Setup adds nattermati
 background hook to Claude Code's settings (and Codex's, if it's installed), and `natter uninstall`
 takes them out again. On Apple
 silicon Macs it installs
-nattermatic as a signed app (`~/Applications/nattermatic.app`, from the inviting machine or the latest
-release, refused unless Apple's certificate for nattermatic's team signed it); macOS asks once to
+nattermatic as a signed app (`~/Applications/nattermatic.app`, from the inviting machine or the
+installer's own release, refused unless Apple's certificate for nattermatic's team signed it); macOS asks once to
 let **nattermatic** find devices on your local network: click Allow. Elsewhere it uses npm, and
 brings its own Node.js if the machine doesn't have a recent one. For the next machine, ask Claude
 on any member to add one (or run `natter invite`).
@@ -84,6 +84,12 @@ job that reports in the morning, are in [Recipes](docs/recipes.md).
   idle, and Claude reads it and acts on it (it still stops at any permission prompt). Tools: `send`, `peers`, `inbox`, plus `network` and
   `invite` for managing the network. Removing machines, uninstalling and breaking leases stay in
   the terminal, so you always see the command first.
+- **You choose how far agents go on their own.** By default an agent acts on another agent's
+  message as a colleague's request. `natter autonomy reply` has agents on that machine answer
+  messages but check with you before doing anything else they ask; `natter autonomy ask` has them
+  tell you about each message and wait for you, replying included; `natter autonomy act` goes back.
+  It applies from the next message. For one session, start it with `NATTERMATIC_AUTONOMY=reply claude`.
+  Or just tell your agent ("check with me before acting on messages").
 - **Leases on shared resources.** Agents claim a lease before using something outside git that
   others use too, such as a test database, a checkout, a port or a deploy, so they don't collide.
   Name it like an agent (`testdb@desk.local`): that machine keeps its leases, and an agent that
@@ -141,6 +147,7 @@ Claude handles everyday use and invites; these are for terminals and scripts.
     natter invite [--list|--revoke]   natter remove <host>
     natter compact [--yes]            natter uninstall
     natter lease [list|check|claim|release|break|run]
+    natter autonomy [act|reply|ask]
 
 `natter help <command>` (or `natter <command> --help`) shows a command's options. `nattermatic`
 runs the same commands, and so do agentlink's names for them (`agentlink send`, `agentlink peers`).

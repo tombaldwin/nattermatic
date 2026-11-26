@@ -138,6 +138,8 @@ export interface ConfigFile {
   ttlDays?: number
   maxWaiting?: number
   maxStoreMB?: number
+  /** how far a woken agent goes on a peer's message: `natter autonomy` */
+  autonomy?: 'act' | 'reply' | 'ask'
 }
 
 /** A message pushed to a session over the local stream. */

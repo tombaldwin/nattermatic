@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.4 — 2026-11-26
+
+You choose how far agents go on their own, and the installer is pinned to its release.
+
+- **Choose how far agents go on their own with messages.** `natter autonomy act` (the default)
+  keeps today's behaviour: an agent acts on another agent's message as a colleague's request.
+  `natter autonomy reply` has agents on that machine answer messages but check with you before
+  doing anything else they ask, and `natter autonomy ask` has them check with you before doing
+  anything, replying included. The wake note, Codex's wake note and the inbox all carry the choice,
+  from the next message (sessions started before the upgrade: once they restart).
+  `NATTERMATIC_AUTONOMY=<level>` sets it for one Claude Code session. A setting that can't be read
+  counts as `ask`, never as more. Setup says how to change it, and the skill changes it when you ask
+  your agent to.
+- **The installer is pinned to one release.** It installs that release's app and
+  `nattermatic@<version>` from npm, not the latest of each, and a fixed Node.js version checked
+  against checksums written in the installer, not ones downloaded beside it. The plugin's skill runs
+  the installer from the release's tag, so a plugin pinned to a commit installs exactly that
+  release.
+- **The skill lists what setup changes before asking to run it**: where it installs, the hooks
+  and the events they're on, the two tools it pre-allows, the MCP server, the background service
+  and port 7777, lingering on Linux, Codex's config, the shell startup line, and what uninstalling
+  leaves. For an invite prompt, it shows the whole command before running it, and says if joining
+  would leave another network.
+- **CI runs on release tags**, since a release's tag is now pushed before `main`.
+
 ## 0.4.3 — 2026-11-25
 
 Fixes from rehearsing a fresh install, and Codex catches up with Claude Code on leases.

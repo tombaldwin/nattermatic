@@ -152,6 +152,25 @@ async function main() {
       const r = await local.req('POST', '/local/send', { from: flags.from || 'cli', to: pos[0], body: pos.slice(1).join(' ') })
       return console.log(r.status)
     }
+    case 'autonomy': {
+      const { AUTONOMY, autonomy, savedAutonomy, readConfigFile, writeConfig } = await import('../src/config.js')
+      const levels = Object.keys(AUTONOMY)
+      const want = pos[0]?.trim().toLowerCase()
+      if (pos.length > 1 || (pos.length && !levels.includes(want))) throw new Error(`usage: natter autonomy [${levels.join(' | ')}]`)
+      // only on a machine that's set up: config.json written first would stop setup moving a home
+      // from before the rename (~/.agentlink) into place
+      loadConfig()
+      const file = readConfigFile()          // a broken config.json is an error here, not a level
+      if (want) writeConfig({ autonomy: /** @type {import('../src/config.js').Autonomy} */ (want) })
+      else if (file?.autonomy !== undefined && !levels.includes(String(file.autonomy))) console.log(`config.json has autonomy "${file.autonomy}", which isn't a level: agents treat it as ask.`)
+      const level = savedAutonomy()
+      console.log(`${want ? 'Now' : 'Currently'} ${level}: on this machine, ${AUTONOMY[level].people}.`)
+      const here = autonomy()
+      if (here !== level) console.log(`NATTERMATIC_AUTONOMY=${process.env.NATTERMATIC_AUTONOMY} is set in this shell, so Claude Code sessions started from it use ${here} instead.`)
+      if (!want) console.log(`Change it with: natter autonomy ${levels.join(' | ')}`)
+      else console.log('Sessions started before nattermatic was last upgraded keep their old behaviour until they restart (or /reload-plugins).')
+      return
+    }
     case 'who': {
       const p = await (await client()).req('GET', '/local/peers')
       console.log(`${p.self} (this machine): ${p.local.join(', ') || '(no agents)'}`)
