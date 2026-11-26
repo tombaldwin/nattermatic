@@ -53,6 +53,8 @@ test('the installer and the skill install this release, and nothing unpinned', (
   const readme = fs.readFileSync(new URL('../../plugins/nattermatic/README.md', import.meta.url), 'utf8')
   for (const [name, text] of [['SKILL.md', skill], ['the plugin README', readme]]) {
     assert.ok(text.includes(line), `${name} runs the installer from this release's tag`)
-    assert.doesNotMatch(text.replace(line, ''), /nattermatic\/v\d+\.\d+\.\d+\/install\.sh/, `${name} names no other release`)
+    assert.doesNotMatch(text.replaceAll(line, ''), /nattermatic\/v\d+\.\d+\.\d+\/install\.sh/, `${name} names no other release`)
+    assert.doesNotMatch(text, /nattermatic\.com\/install\.sh|tombaldwin\/nattermatic\/(main|HEAD)\//, `${name} runs no installer that can change after review`)
   }
+  assert.equal(/published with, (\S+?)\. /.exec(skill)?.[1], pkg.version, 'the release SKILL.md says it upgrades to')
 })

@@ -62,7 +62,7 @@ first version (a 0.0.1 placeholder, when the name was reserved) was published by
 1. Set the version in `package.json`, `src/config.js` (`VERSION`), `server.json` (both
    `version`s), `plugins/nattermatic/.claude-plugin/plugin.json`,
    `.claude-plugin/marketplace.json`, `install.sh` (`RELEASE`) and the install lines in
-   `plugins/nattermatic/skills/nattermatic/SKILL.md` and `plugins/nattermatic/README.md`, and date its section in `CHANGELOG.md`
+   `plugins/nattermatic/skills/nattermatic/SKILL.md` (both, and the release its upgrade section names) and `plugins/nattermatic/README.md`, and date its section in `CHANGELOG.md`
    (`## X.Y.Z — YYYY-MM-DD`). `npm run test:unit` fails if one is left behind. To move to a newer
    Node.js, change `NODE` in `install.sh` and the four checksums from that version's
    `SHASUMS256.txt` on nodejs.org.

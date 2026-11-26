@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.5 — 2026-11-26
+
+The plugin's skill upgrades to its own release too.
+
+- **Upgrading from the skill is pinned as well.** The skill's upgrade line now runs the installer
+  from its release's tag, like its install line, so the plugin runs no installer that can change
+  after it's reviewed. To move to a newer release, update the plugin first (`claude plugin update
+  nattermatic`), which brings that release's skill. The installer at nattermatic.com, and the
+  upgrade hints from `natter doctor` and the network tool, still go to the newest release.
+
 ## 0.4.4 — 2026-11-26
 
 You choose how far agents go on their own, and the installer is pinned to its release.
