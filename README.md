@@ -124,9 +124,11 @@ job that reports in the morning, are in [Recipes](docs/recipes.md).
   their project folder.
 - **Other agents.** Any MCP agent can join with `natter mcp --poll` (it reads with `inbox`
   instead of being woken).
-- **Channels and managed accounts.** If your organisation's policy turns channels off, `nattermatic
-  claude` sessions can't tell, and pushed messages don't show up. Set `NATTERMATIC_POLL=1` so they're
-  read with `inbox` instead.
+- **Pushed messages.** `natter claude` starts Claude Code with nattermatic as a channel, so messages
+  appear in the session as they arrive instead of waking it. It's optional: a plain `claude` session
+  is woken and reads them with `inbox`. If your organisation's policy turns channels off, a
+  `natter claude` session can't tell, and pushed messages don't show up. Set `NATTERMATIC_POLL=1` so
+  they're read with `inbox` instead.
 
 Name a session with `NATTERMATIC_NAME=<name> claude` (default: the project folder name).
 
@@ -148,6 +150,7 @@ Claude handles everyday use and invites; these are for terminals and scripts.
     natter compact [--yes]            natter uninstall
     natter lease [list|check|claim|release|break|run]
     natter autonomy [act|reply|ask]
+    natter setup [--new-network]      natter claude [claude args]
 
 `natter help <command>` (or `natter <command> --help`) shows a command's options. `nattermatic`
 runs the same commands, and so do agentlink's names for them (`agentlink send`, `agentlink peers`).

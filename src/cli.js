@@ -21,6 +21,7 @@ Also enables nattermatic for every Claude Code account on this machine, and for 
       ['--no-service', 'don\'t install the background service'],
       ['--no-claude', 'don\'t enable nattermatic in Claude Code'],
       ['--no-codex', 'don\'t enable nattermatic in Codex'],
+      ['--no-alias', 'don\'t add natter to the shell\'s startup file'],
     ],
   },
   {
@@ -35,7 +36,8 @@ machine join and expires in 24 hours.`,
   {
     name: 'to', args: '<name@host> <message...>', summary: 'send a message to an agent',
     help: `Everything after the address is the message. A bare name means this machine.
-Prints whether it was delivered, is waiting in an inbox, or is held until the machine is back.
+Prints what happened to it: pushed to the agent's live session, stored on its machine until the
+agent next reads its inbox, or queued here until that machine is back.
 Example: natter to reviewer@laptop.local "the build is green"`,
     flags: [['--from <name>', 'the sender name to show (default: cli)']],
   },
@@ -54,7 +56,7 @@ Agents claim leases with their claim tool. Only people break them.`,
     flags: [
       ['--note <why>', 'what it\'s being used for, shown to anyone who finds it taken'],
       ['--minutes <n>', 'how long a claim lasts unless renewed (default 15, at most 240)'],
-      ['--max <minutes>', 'lease run: the most it may hold the lease (default and most: 240)'],
+      ['--max <minutes>', 'lease run: the longest it may hold the lease (default and maximum: 240)'],
       ['--as <name>', 'the holder name to show (default: cli; for lease run, this folder\'s name)'],
       ['--host <machine>', 'list: whose leases to show'],
     ],
@@ -95,7 +97,8 @@ Only needed if the list nears its size limit after many machines have come and g
     name: 'claude', args: '[claude args...]', summary: 'start Claude Code with messages pushed into the session',
     help: `Optional: ordinary \`claude\` sessions already get messages, and are woken by them.
 This starts Claude Code with nattermatic as a channel, so messages appear in the session as they
-arrive. Arguments are passed to claude.`,
+arrive instead of waking it. Arguments are passed to claude. If your organisation's policy turns
+channels off, pushed messages don't show up: set NATTERMATIC_POLL=1 to read them with inbox instead.`,
   },
   { name: 'uninstall', summary: 'remove the background service and the Claude Code and Codex setup' },
   {

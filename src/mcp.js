@@ -148,7 +148,7 @@ export async function runAdapter(cfg, { name, poll = false, channel } = {}) {
       } catch (e) {
         if (e instanceof StaleError) {
           if (!stale) log(errMsg(e))
-          stale = `${errMsg(e)}. Restart this session to reconnect: in Claude Code, exit and start it again with \`claude --continue\`; in Codex, start a new session.`
+          stale = `${errMsg(e)}. Restart this session to reconnect: in Claude Code, type /reload-plugins, or exit and start it again with \`claude --continue\`; in Codex, start a new session.`
           firstHello(null)
           await sleep(60_000)   // keep checking slowly, in case the node goes back to this version
           continue
@@ -396,7 +396,7 @@ export const TOOLS = [
   {
     name: 'inbox',
     description: 'Read messages other agents sent you. Use this when you\'re told you have new messages, or to check for them. ' +
-      'Usually it returns the unread ones and marks them read; in a session where messages are pushed in as they arrive (natter claude), it shows the most recent ones again. If it says there are more, call it again.',
+      'Usually it returns the unread ones and marks them read; in a session where messages are pushed in as they arrive (one started with natter claude), it shows the most recent ones again. If it says there are more, call it again.',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'The most messages to return (default: as many unread as fit, or the last 10 of history, up to 100).' } } },
   },
 ]
@@ -434,7 +434,7 @@ export function formatNetwork(st, pe) {
   const remote = new Map((pe?.remote || []).map(r => [r.host, r]))
   const lines = [`This machine: ${st.host} (nattermatic ${st.version})`]
   if (st.removed) lines.push('This machine has been removed from its network. To rejoin, run an invite from a member (natter invite).')
-  else if (!st.member) lines.push('This machine is not a member of its network yet.')
+  else if (!st.member) lines.push('This machine is not a member of its network yet. To join, run the invite line from `natter invite` on a member.')
   lines.push('', 'Machines, in joining order (each can remove the ones listed after it):')
   const members = st.members || []
   // the newest version any machine here runs: one behind it can be upgraded
