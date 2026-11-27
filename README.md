@@ -98,7 +98,8 @@ job that reports in the morning, are in [Recipes](docs/recipes.md).
   again to renew it), and it ends when it's released, when its session goes, when it runs out, or after
   4 hours at most. A session that restarts keeps its leases. Long unattended jobs use
   `natter lease run testdb -- <command>`, which holds the lease exactly as long as the command runs.
-  Leases are advisory; a tool that wants to enforce them can check with `natter lease check`.
+  Leases are advisory; a tool that wants to enforce them can check with `natter lease check
+  <resource>` (exit 0 when it's free, 1 when it's held, 2 on an error).
   Only people break them (`natter lease break`), and the holder is told. Tools: `claim`,
   `release`, `leases`.
 - **Nothing gets lost.** Messages are stored on disk at every hop and retried. If the recipient

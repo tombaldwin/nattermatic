@@ -34,3 +34,21 @@ test('nothing on the port: a node is started and the request sent again, only wh
     assert.equal(started, 1, 'not once nattermatic is uninstalled')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('cut off while the node proved itself (it stopped just as this connected): sent again too, as nothing of it was sent', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'natter-start-'))
+  // accepts the connection and drops it at once: what a node dying in that moment looks like
+  const server = net.createServer(s => s.destroy())
+  await new Promise(r => server.listen(0, '127.0.0.1', () => r(null)))
+  try {
+    const port = /** @type {net.AddressInfo} */ (server.address()).port
+    const local = new Local({ identity: newIdentity(), port, dir })
+    let started = 0
+    local.ensureNode = async () => { started++; return /** @type {any} */ (null) }
+    await assert.rejects(local.req('GET', '/local/status'), /cannot reach the nattermatic node/)
+    assert.equal(started, 0, 'off by default (hooks)')
+    local.startIfNone = true
+    await assert.rejects(local.req('GET', '/local/status'), /cannot reach the nattermatic node[^]*(ECONNRESET|EPIPE|socket hang up|disconnected)/)
+    assert.equal(started, 1, 'started once, and sent once more')
+  } finally { await new Promise(r => server.close(r)); fs.rmSync(dir, { recursive: true, force: true }) }
+})

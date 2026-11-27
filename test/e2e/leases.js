@@ -64,6 +64,11 @@ await run(async () => {
     assert.match(await waiter.call('claim', { resource: 'cache@b.test', note: 'me next', notify: true }), /^Not claimed/)
     await gone.close()
     await pushed(waiter, /cache@b\.test is free now .*its session had gone/)
+    // the holder's notice waits under its name: a session back under it (a restart) hears, and so does
+    // a new agent later given the name, which is told which claim it was about (#7)
+    const later = await adapter('a', 'lease-gone')
+    await pushed(later, /your lease on cache@b\.test has ended: it ended because its session had gone[^]*if you never claimed cache@b\.test, this was for an earlier session with your name/)
+    await later.close()
     // not renewed: a short lease, nothing done meanwhile
     const idle = await adapter('a', 'lease-idle')
     assert.match(await idle.call('claim', { resource: 'scratch', note: 'idle', minutes: 0.04 }), /^Claimed/)
@@ -138,5 +143,15 @@ await run(async () => {
     assert.match(await s.call('claim', { resource: 'db@b.test', note: 'durable' }), /^Renewed/, 'and still its own')
     assert.match(await s.call('release', { resource: 'db@b.test' }), /^Released/)
     await s.close()
+  })
+
+  await step('a send in the moment after the node stops starts a node and goes through (#13)', async () => {
+    // (last: the node this starts isn't the harness's child, so nothing after could restart a)
+    await localOf('a').req('POST', '/local/shutdown')
+    assert.match(cli('a', 'to', 'someone', 'sent just after the node stopped'), /queued until someone connects/)
+    const h = await localOf('a').health()
+    assert.ok(h && !('foreign' in h) && h.pid !== procs.a.pid, 'a new node is up')
+    const { messages } = await localOf('a').req('GET', '/local/history', undefined, '?name=someone')
+    assert.ok(messages.some((/** @type {any} */ m) => m.body === 'sent just after the node stopped' && m.state === 'queued'), 'the message waits there')
   })
 })

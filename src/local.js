@@ -160,9 +160,11 @@ export class Local {
     try {
       r = await send()
     } catch (e) {
-      // refused before anything was sent, so it can be sent again: once a node has started (#13), or
-      // with this machine's key if that was replaced meanwhile
-      if (errCode(e) === 'ECONNREFUSED' && this.startIfNone && !anyProto && !fs.existsSync(path.join(this.cfg.dir, 'disabled'))) {
+      // refused, or cut off while the node proved itself (it stopped just as this connected): nothing
+      // of the request was sent, so it can be sent again: once a node has started (#13), or with this
+      // machine's key if that was replaced meanwhile
+      const nothingSent = errCode(e) === 'ECONNREFUSED' || (/** @type {any} */ (e)?.unsent === true && ['ECONNRESET', 'EPIPE'].includes(errCode(e)))
+      if (nothingSent && this.startIfNone && !anyProto && !fs.existsSync(path.join(this.cfg.dir, 'disabled'))) {
         try { await this.ensureNode() } catch { throw this.wrap(e) }
       } else if (!(e instanceof PinError) || !this.reloadIdentity()) throw this.wrap(e)
       try { r = await send() } catch (e2) { throw this.wrap(e2) }

@@ -5,6 +5,9 @@
 - **A member can't make a node check thousands of signatures at once.** Each machine takes at most
   500 new membership records from another in a burst, then 500 a minute; the rest are offered again
   at the next exchange. Real networks have some tens of records, so nothing changes for them (#9).
+- A send (or any tool call or command) cut off while the node was proving itself, because the node
+  stopped in the moment it connected, is sent again once a node is up, like one that found nothing on
+  the port (#13). Nothing of the request had been sent, so it can't arrive twice.
 
 ## 0.4.5 — 2026-11-26
 

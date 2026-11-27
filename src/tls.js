@@ -53,6 +53,12 @@ export const MAX_BODY = 8 << 20
 /** The slowest link we wait for, in bytes per ms (about 200 kbit/s). */
 export const MIN_RATE = 25
 const notExpected = () => new PinError('not the expected machine (key mismatch)')
+/**
+ * A failure before a byte of the request was written (while the server proved itself), marked so
+ * the caller knows it can safely send the request again: nothing of it reached anyone.
+ * @template T @param {Promise<T>} p @returns {Promise<T>}
+ */
+const unsent = p => p.catch(e => { throw e && typeof e === 'object' ? Object.assign(e, { unsent: true }) : e })
 
 /** A connection's TLS exporter: the value both identity proofs sign. @param {tls.TLSSocket} sock */
 export const exporterOf = sock => sock.exportKeyingMaterial(32, 'EXPORTER-agentlink-auth', Buffer.alloc(0))
@@ -112,7 +118,7 @@ export async function authedRaw(o) {
     // 1. the gate: show we belong to the network; the server answers with its signed identity
     /** @type {tls.TLSSocket | null} */
     let sock = null
-    const r1 = await new Promise((resolve, reject) => {
+    const r1 = await unsent(new Promise((resolve, reject) => {
       // the timeout option, not req.setTimeout: that one only starts once the connection is up, so a
       // silently dropped connect would wait out the OS's limit (over a minute)
       const signal = o.signal ? AbortSignal.any([o.signal, first.signal]) : first.signal
@@ -126,8 +132,8 @@ export async function authedRaw(o) {
           try { req.setHeader('x-agentlink-gate', gateTags(o.dks, exporterOf(t))); req.end() } catch (e) { req.destroy(/** @type {Error} */ (e)) }
         })
       })
-    })
-    const text = await readAll(r1, 4096)
+    }))
+    const text = await unsent(readAll(r1, 4096))
     if (!sock) throw notExpected()
     const ekm = exporterOf(sock)
     /** @type {any} */

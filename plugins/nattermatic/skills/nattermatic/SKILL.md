@@ -125,6 +125,8 @@ you're done. Name it like an agent: `testdb@desk.local`, or just `testdb` for th
   `natter lease run <resource> -- <command>`: the lease lasts exactly as long as the command.
 - `leases` shows what's held on a machine. Only people break leases (`natter lease break`, in a
   terminal), never agents.
+- A script that should respect a lease can run `natter lease check <resource>`: it exits 0 when the
+  resource is free, 1 when it's held, and 2 on an error (the node couldn't be reached, a bad name).
 
 ## Versions and upgrading
 
