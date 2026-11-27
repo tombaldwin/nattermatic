@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Lease notices come from your own machine, whichever machine keeps the lease.** When a lease on
+  another machine's resource ends, or a resource you asked about there is free, the notice now
+  arrives from `leases@` on your machine, as the instructions always said, so agents no longer treat
+  it as a peer's message. The machine that keeps the lease sends your node fixed fields (what ended,
+  why, who held it) and your node writes the notice, so no other machine's words are in it. A notice
+  for a machine that's off waits on the machine that keeps the lease, for up to 7 days, and is sent
+  when it's back. A machine on an older version is sent the notice as before (as a message from
+  `leases@` on the machine that keeps the lease).
+- **One machine can't fill another's store with leases.** The agents of one machine may hold at
+  most 1,000 leases on another between them, whatever names they use, and wait to hear about at
+  most 1,000 of its resources; a claim past that is refused with a clear error. Honest use is far
+  below this (one agent's limit of 64 stays). Leases and waits are counted on indexes, and the
+  sweep that ends leases whose time is up reads only those.
 - **A member can't make a node check thousands of signatures at once.** Each machine takes at most
   500 new membership records from another in a burst, then 500 a minute; the rest are offered again
   at the next exchange. Real networks have some tens of records, so nothing changes for them (#9).

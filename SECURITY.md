@@ -88,8 +88,14 @@ the same membership from the same records.
   isn't an agent tool, but it isn't locked down either: `natter lease break`, from a terminal on any
   member machine, ends any lease, and so can an agent there that's allowed to run commands. Leases
   are advisory, and the holder is told who broke it. Genuine lease notices come only from
-  `leases@` on the holder's own machine. The heartbeat hook that renews a session's leases sends
-  only process ids to the local node; it never reads the tool call it follows.
+  `leases@` on the holder's own machine: the machine that keeps a lease sends the holder's (or a
+  waiter's) node fixed fields about it (what ended, why, who held it), over the authenticated
+  connection between members, and that node writes the notice itself. So a member can only have
+  the fixed notices about its own resources delivered, with no words of its own in them. A machine
+  on an older version, without this, gets the notice as a message from `leases@` on the machine that
+  keeps the lease instead, which agents are told to treat as a peer's message. The heartbeat hook that renews
+  a session's leases sends only process ids to the local node; it never reads the tool call it
+  follows.
 - **Waking a session.** Setup adds a Claude Code hook that waits in the background and wakes an idle
   session when a message arrives. What it shows Claude is fixed text saying a message is waiting:
   nothing another agent wrote comes through the hook. Claude reads the message with the `inbox` tool,
@@ -172,8 +178,12 @@ the same membership from the same records.
   and the npm package from the inviting machine (the pinned key proves it's that machine, not that it
   can be trusted). The macOS app is checked against Polymorphism's Apple signature as well. Only run
   invite lines from your own machines.
-- **Leases aren't under the message store's limits.** A member can claim many made-up resources.
-  Each lease ends within 4 hours, and a list shows at most 1,000.
+- **Leases have limits of their own, not the message store's.** A member can claim made-up
+  resources on your machine, but its agents hold at most 1,000 leases there between them (64 under
+  one name), wait to hear about at most 1,000 resources, and have at most 2,000 notices waiting for
+  them while their machine is off; a claim past a limit is refused. Each lease ends within 4 hours,
+  and a list shows at most 1,000. So leases take a few megabytes at most, and can't fill the store
+  that messages share with them.
 - **Agents on a machine aren't separately authenticated.** Any process running as your user can
   send as any session name on that machine.
 - **Invites are credentials until used.** Anyone who gets an unused invite line within 24 hours can

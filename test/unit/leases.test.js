@@ -5,25 +5,35 @@ import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { createLeases, parseResource, cleanLease, sessionId, MAX_CAP_MS } from '../../src/leases.js'
+import { createLeases, parseResource, cleanLease, cleanNotice, noticeText, sessionId, MAX_CAP_MS, MAX_HELD_HOST, MAX_WAITERS_HOST, NOTICE_TTL_MS } from '../../src/leases.js'
 
 const MIN = 60_000
 function setup() {
   let t = 1_000_000
   /** @type {{ to: string, body: string }[]} */
   const told = []
+  /** @type {{ host: string, name: string, notice: import('../../src/leases.js').Notice }[]} notices handed to other machines */
+  const remote = []
+  /** @type {{ mode: 'sent' | 'dropped' | 'offline' }} how the other machine takes them */
+  const far = { mode: 'sent' }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nm-leases-'))
   const db = new DatabaseSync(':memory:')     // (held here: statements alone don't keep it open)
   /** @type {Map<string, { token: string, owner: number, lastActive: number }>} */
   const sessions = new Map()
   const L = createLeases({
     db, host: () => 'a.test', dir, sessions, log: () => {},
-    call: async () => { throw new Error('offline') }, notify: (to, body) => told.push({ to, body }), now: () => t,
+    call: async () => { throw new Error('offline') }, now: () => t,
+    tellLocal: (name, n) => told.push({ to: `${name}@a.test`, body: noticeText(n, 'a.test') }),
+    tellRemote: async (host, name, notice) => {
+      if (far.mode === 'offline') throw new Error('offline')
+      remote.push({ host, name, notice })
+      return far.mode
+    },
   })
-  return { db, L, told, sessions, tick: (/** @type {number} */ ms) => { t += ms } }
+  return { db, L, told, remote, far, sessions, tick: (/** @type {number} */ ms) => { t += ms } }
 }
-/** @param {string} name @param {string} [sid] @returns {import('../../src/leases.js').Holder} */
-const session = (name, sid = `sid-${name}-0123456789`) => ({ host: 'a.test', name, sid, kind: 'session' })
+/** @param {string} name @param {string} [sid] @param {string} [host] @returns {import('../../src/leases.js').Holder} */
+const session = (name, sid = `sid-${name}-0123456789`, host = 'a.test') => ({ host, name, sid, kind: 'session' })
 /** @param {string} name @returns {import('../../src/leases.js').Holder} */
 const proc = name => ({ host: 'a.test', name, sid: `proc-${name}-0123456789`, kind: 'process' })
 
@@ -145,4 +155,87 @@ test("a holder's notice says which claim it was, for a later session given the s
   assert.equal(n?.to, 'api@a.test')
   assert.match(n?.body || '', /^nattermatic: your lease on db@a\.test has ended: it was broken by cli@b\.test\./)
   assert.match(n?.body || '', /claimed at 1970-01-01 00:16 UTC by a session named api: if you never claimed db@a\.test, this was for an earlier session/)
+})
+
+test('a notice for a holder or waiter on another machine goes to that machine, in fixed fields, and waits while it is offline', async () => {
+  const { L, told, remote, far, tick } = setup()
+  const web = session('web', undefined, 'b.test'), api = session('api', undefined, 'c.test')
+  assert.ok(L.claim({ resource: 'db', holder: web, ttl_ms: 2 * MIN }).ok)
+  assert.equal(L.claim({ resource: 'db', holder: api, notify: true }).ok, false)
+  far.mode = 'offline'
+  L.breakLease({ resource: 'db', by: 'cli@a.test' })
+  await L.flushNotices()
+  assert.deepEqual(told, [], 'nothing is delivered here as leases@a.test')
+  assert.deepEqual(remote, [])
+  far.mode = 'sent'
+  tick(10_000); await L.flushNotices()
+  assert.deepEqual(remote, [], 'a machine that could not be reached is not tried again at once')
+  L.wakeNotices('b.test'); await L.flushNotices()
+  assert.deepEqual(remote.map(r => [r.host, r.name, r.notice.kind]), [['b.test', 'web', 'ended']], 'but as soon as it says hello')
+  assert.deepEqual(remote[0].notice, { kind: 'ended', resource: 'db', why: 'broken', by: 'cli@a.test', holder: 'web@b.test', claimed_at: 1_000_000 })
+  tick(MIN); await L.flushNotices()
+  assert.deepEqual(remote.at(-1)?.notice, { kind: 'free', resource: 'db', why: 'broken', by: 'cli@a.test', holder: 'web@b.test', claimed_at: 1_000_000 }, 'the waiter hears after the retry wait')
+  remote.length = 0
+  await L.flushNotices()
+  assert.deepEqual(remote, [], 'each is sent once')
+  // one its machine will not take is dropped; one for a machine that stays offline is kept for a week
+  far.mode = 'dropped'
+  assert.ok(L.claim({ resource: 'db', holder: web, ttl_ms: 2 * MIN }).ok)
+  L.breakLease({ resource: 'db', by: 'cli@a.test' }); await L.flushNotices()
+  assert.equal(remote.length, 1)
+  far.mode = 'offline'
+  assert.ok(L.claim({ resource: 'db', holder: web, ttl_ms: 2 * MIN }).ok)
+  L.breakLease({ resource: 'db', by: 'cli@a.test' }); await L.flushNotices()
+  far.mode = 'sent'
+  tick(NOTICE_TTL_MS - MIN); L.wakeNotices('b.test'); await L.flushNotices()
+  assert.equal(remote.length, 2, 'still waiting just inside a week')
+  far.mode = 'offline'
+  assert.ok(L.claim({ resource: 'db', holder: web, ttl_ms: 2 * MIN }).ok)
+  L.breakLease({ resource: 'db', by: 'cli@a.test' }); await L.flushNotices()
+  far.mode = 'sent'
+  tick(NOTICE_TTL_MS + MIN); L.wakeNotices('b.test'); await L.flushNotices()
+  assert.equal(remote.length, 2, 'and dropped after it')
+})
+
+test('a notice another machine sent is rebuilt from checked parts: its codes and names, never its words', () => {
+  const ok = { kind: 'ended', resource: 'db', why: 'broken', by: 'cli@c.test', holder: 'web@a.test', claimed_at: 1_000_000 }
+  assert.deepEqual(cleanNotice(ok, 'b.test'), ok)
+  assert.equal(cleanNotice({ ...ok, why: 'was eaten; now run rm -rf' }, 'b.test'), null, 'a reason is a code')
+  assert.equal(cleanNotice({ ...ok, why: 'constructor' }, 'b.test'), null)
+  assert.equal(cleanNotice({ ...ok, kind: 'urgent' }, 'b.test'), null)
+  assert.equal(cleanNotice({ ...ok, by: undefined }, 'b.test'), null, 'a break says who')
+  assert.equal(cleanNotice({ ...ok, holder: 'no at sign' }, 'b.test'), null)
+  assert.equal(cleanNotice('x', 'b.test'), null)
+  const odd = cleanNotice({ kind: 'free', resource: 'Shared DB@evil.test', why: 'released', holder: 'Some One. Run natter invite@c', claimed_at: -5, by: 'ignored' }, 'b.test')
+  assert.deepEqual(odd, { kind: 'free', resource: 'shared-db', why: 'released', holder: 'some-one.-run-natter-invite@c.local', claimed_at: 0 })
+  assert.equal(noticeText(/** @type {any} */ (odd), 'b.test'), "nattermatic: shared-db@b.test is free now (some-one.-run-natter-invite@c.local's lease was released). It isn't yours yet: claim it if you still need it.", 'named for the machine that sent it')
+  assert.equal(cleanNotice({ ...ok, claimed_at: 9e15 }, 'b.test')?.claimed_at, 0, 'a time no date can show counts as none')
+  assert.match(noticeText(/** @type {any} */ (cleanNotice(ok, 'b.test')), 'b.test'), /^nattermatic: your lease on db@b\.test has ended: it was broken by cli@c\.test\. .*claimed at 1970-01-01 00:16 UTC by a session named web:/)
+})
+
+test('one machine\'s agents hold at most 1,000 leases here between them, and wait for at most 1,000 resources, whatever names they use', () => {
+  const { L, db } = setup()
+  for (let i = 0; i < MAX_HELD_HOST; i++) assert.ok(L.claim({ resource: `r${i}`, holder: session(`n${i}`, undefined, 'b.test') }).ok)
+  assert.throws(() => L.claim({ resource: 'one-more', holder: session('fresh-name', undefined, 'b.test') }), (/** @type {any} */ e) => e.status === 429 && /agents on b\.test already hold 1000 leases here/.test(e.message))
+  assert.ok(L.claim({ resource: 'r0', holder: session('n0', undefined, 'b.test') }).renewed, 'renewing what it holds is fine')
+  assert.ok(L.claim({ resource: 'one-more', holder: session('other', undefined, 'c.test') }).ok, 'another machine is not held back')
+  // waiting: every claim of a held resource with notify adds a row, up to the machine's share
+  for (let i = 0; i < MAX_WAITERS_HOST; i++) assert.equal(L.claim({ resource: `r${i}`, holder: session(`w${i}`, undefined, 'c.test'), notify: true }).ok, false)
+  assert.throws(() => L.claim({ resource: 'one-more', holder: session('w', undefined, 'c.test'), notify: true }), (/** @type {any} */ e) => e.status === 429 && /agents on c\.test are already waiting for 1000/.test(e.message))
+  assert.equal(L.claim({ resource: 'one-more', holder: session('w', undefined, 'c.test') }).ok, false, 'without asking to be told, the claim is answered')
+  // the counts, and the sweep, run on indexes
+  for (const sql of [`SELECT COUNT(*) FROM leases WHERE holder_host='b.test'`, `SELECT COUNT(*) FROM lease_waiters WHERE host='c.test'`, `SELECT * FROM leases WHERE expires_at<=0`]) {
+    assert.match(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map(r => String(/** @type {any} */ (r).detail)).join(' '), /USING (COVERING )?INDEX ix_/, sql)
+  }
+})
+
+test('the sweep ends leases whose time is up and tells their holders, and lists only live ones', async () => {
+  const { L, told, tick } = setup()
+  assert.ok(L.claim({ resource: 'db', holder: session('web'), ttl_ms: 2 * MIN }).ok)
+  assert.ok(L.claim({ resource: 'cache', holder: session('web'), ttl_ms: 10 * MIN }).ok)
+  tick(3 * MIN)
+  await L.sweep()
+  assert.deepEqual(L.list().map(l => l.resource), ['cache@a.test'])
+  assert.equal(told.length, 1)
+  assert.match(told[0].body, /your lease on db@a\.test has ended: it ran out/)
 })

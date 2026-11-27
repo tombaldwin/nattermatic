@@ -19,6 +19,12 @@
 //     under the same name on the same machine, before then, keeps its leases (an adapter restart)
 //   - a person breaks it (`natter lease break`, never an agent tool); the holder is told
 //
+// When a lease ends, its holder and anyone waiting for the resource get a notice from leases@ on
+// their own machine. The authority sends only fixed fields (what ended, why, who held it) to the
+// holder's node, which writes the notice itself: no words of another machine's reach a session as
+// nattermatic's, and a member can only have the fixed notices about its own resources delivered.
+// Notices for a machine that can't be reached wait here, and are sent when it's back.
+//
 // A session's lease is held by the session (its id), not just its name: a new session in the same
 // folder can't renew or release it without saying it's taking it over. A terminal's claims and
 // `lease run`'s are held by processes, which never count as the same holder as a session. Times are
@@ -37,10 +43,16 @@ export const GONE_GRACE_MS = Number(process.env.NATTERMATIC_LEASE_GRACE_MS) || 6
 // the shortest ttl (the end-to-end tests make it shorter, to watch leases run out)
 export const MIN_TTL_MS = Number(process.env.NATTERMATIC_LEASE_MIN_MS) || 60_000
 const MAX_HELD = 64                   // leases one holder may have on one machine
+// ...and between all of one machine's agents: names are anyone's to make up, and the store is shared
+// with messages (a machine with many sessions has far fewer leases than this)
+export const MAX_HELD_HOST = 1000
 const MAX_WAITERS = 50                // agents waiting to hear one resource is free
+export const MAX_WAITERS_HOST = 1000  // waits by all of one machine's agents, on this machine's resources
 export const MAX_NOTE = 500
 export const MAX_RESOURCE = 200
-const RETRY_MS = 60_000               // an authority that couldn't be reached is asked again after this
+const RETRY_MS = 60_000               // a machine that couldn't be reached is tried again after this
+export const NOTICE_TTL_MS = 7 * 86400_000   // a notice for a machine that's offline waits this long (as a message would)
+const MAX_NOTICES_HOST = 2000         // notices waiting for one machine
 export const SID = /^[\w-]{16,64}$/
 
 /** @typedef {{ host: string, name: string, sid: string, kind: 'session' | 'process' }} Holder */
@@ -49,6 +61,56 @@ export const SID = /^[\w-]{16,64}$/
  *   note: string, id: string, acquired_at: number, expires_at: number, cap_at: number, ttl_ms: number }} LeaseRow
  */
 /** @typedef {{ authority: string, resource: string, name: string, sid: string, kind: string, ttl_ms: number, renewed_at: number }} HeldRow */
+/** @typedef {{ id: number, host: string, name: string, notice: string, added_at: number, next_attempt: number }} NoticeRow */
+/** Why a lease ended: a code, never text, so the machine that hears it writes its own words. */
+/** @typedef {'cap' | 'expired' | 'released' | 'broken' | 'gone'} Why */
+/**
+ * A notice about a lease on one machine's resource, for a holder ('ended') or a waiter ('free') on
+ * another, in fixed fields. `resource` is its bare name: the machine it's on is whoever sends this.
+ * `by`: who broke it, as `name@host`.
+ * @typedef {{ kind: 'ended' | 'free', resource: string, why: Why, by?: string, holder: string, claimed_at: number }} Notice
+ */
+const WHY = {
+  cap: () => 'reached its hard cap', expired: () => 'ran out (it was not renewed)', released: () => 'was released',
+  broken: (/** @type {string} */ by) => `was broken by ${by}`, gone: () => 'ended because its session had gone',
+}
+/** @param {Pick<Notice, 'why' | 'by'>} n */
+const whyText = n => WHY[n.why](n.by || 'someone')
+
+/** `name@host`, both as a node writes them, or throw. @param {unknown} h */
+function cleanAddr(h) {
+  const s = String(h ?? ''), at = s.lastIndexOf('@')
+  if (at < 1) throw new Error('not an address')
+  return `${sanitizeName(s.slice(0, at))}@${normHost(s.slice(at + 1))}`
+}
+
+/**
+ * A notice as another machine sent it, rebuilt from checked parts: each field is a code, a name as a
+ * node makes it, or a number. null if it doesn't add up. @param {unknown} n @param {string} authority
+ */
+export function cleanNotice(n, authority) {
+  const d = /** @type {Record<string, unknown>} */ (n && typeof n === 'object' ? n : {})
+  const kind = d.kind === 'ended' || d.kind === 'free' ? d.kind : null
+  const why = typeof d.why === 'string' && Object.hasOwn(WHY, d.why) ? /** @type {Why} */ (d.why) : null
+  if (!kind || !why) return null
+  try {
+    const resource = parseResource(d.resource, authority).name
+    const by = why === 'broken' ? { by: cleanAddr(d.by) } : {}
+    const at = Number.isSafeInteger(d.claimed_at) && /** @type {number} */ (d.claimed_at) >= 0 && /** @type {number} */ (d.claimed_at) <= 8.64e15 ? /** @type {number} */ (d.claimed_at) : 0
+    return /** @type {Notice} */ ({ kind, resource, why, holder: cleanAddr(d.holder), claimed_at: at, ...by })
+  } catch { return null }
+}
+
+/** The notice as a session reads it, written by its own node. @param {Notice} n @param {string} authority the machine whose resource it is */
+export function noticeText(n, authority) {
+  const res = `${n.resource}@${authority}`, why = whyText(n)
+  if (n.kind === 'free') return `nattermatic: ${res} is free now (${n.holder}'s lease ${why}). It isn't yours yet: claim it if you still need it.`
+  // by name, so a session that restarted under it hears (its leases carry over to it); but a new
+  // agent given the same name later may get it too (#7), so it says which claim it was
+  const at = new Date(n.claimed_at).toISOString().slice(0, 16).replace('T', ' ')
+  const name = n.holder.slice(0, n.holder.lastIndexOf('@'))
+  return `nattermatic: your lease on ${res} has ended: it ${why}. You no longer hold it: if you still need ${res}, claim it again before using it, and check nothing changed meanwhile. (It was claimed at ${at} UTC by a session named ${name}: if you never claimed ${res}, this was for an earlier session with your name, and you can ignore it.)`
+}
 
 /** A session's id as leases know it: never its token, which reclaims its name. @param {string} token */
 export const sessionId = token => token ? crypto.createHash('sha256').update(`nattermatic-session:${token}`).digest('base64url').slice(0, 22) : ''
@@ -122,33 +184,55 @@ export function leaseTables(db) {
     CREATE TABLE IF NOT EXISTS held(
       authority TEXT NOT NULL, resource TEXT NOT NULL, name TEXT NOT NULL, sid TEXT NOT NULL, kind TEXT NOT NULL,
       ttl_ms INTEGER NOT NULL, renewed_at INTEGER NOT NULL, PRIMARY KEY(authority, resource));
+    CREATE TABLE IF NOT EXISTS lease_notices(
+      id INTEGER PRIMARY KEY, host TEXT NOT NULL, name TEXT NOT NULL, notice TEXT NOT NULL,
+      added_at INTEGER NOT NULL, next_attempt INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_leases_expiry ON leases(expires_at);
+    CREATE INDEX IF NOT EXISTS ix_leases_holder ON leases(holder_host, holder_name);
+    CREATE INDEX IF NOT EXISTS ix_lease_waiters_host ON lease_waiters(host);
+    CREATE INDEX IF NOT EXISTS ix_lease_notices_host ON lease_notices(host);
   `)
 }
 
 /**
  * The lease side of a node.
+ * `tellLocal`: deliver a notice to a holder or waiter on this machine. `tellRemote`: hand one to the
+ * machine the holder or waiter is on: 'sent', or 'dropped' when it can't take it (it's no member, or
+ * refused it); it throws when the machine can't be reached now, and the notice waits for it.
  * @param {{
  *   db: import('node:sqlite').DatabaseSync, host: () => string, dir: string,
  *   sessions: Map<string, { token: string, owner: number, lastActive: number }>,
  *   call: (host: string, method: string, p: string, obj?: unknown, o?: { timeout?: number }) => Promise<any>,
- *   notify: (to: string, body: string) => void,
+ *   tellLocal: (name: string, notice: Notice) => void,
+ *   tellRemote: (host: string, name: string, notice: Notice) => Promise<'sent' | 'dropped'>,
  *   log: (...a: unknown[]) => void, now?: () => number,
  * }} o
  */
-export function createLeases({ db, host, dir, sessions, call, notify, log, now = Date.now }) {
+export function createLeases({ db, host, dir, sessions, call, tellLocal, tellRemote, log, now = Date.now }) {
   leaseTables(db)
   const q = {
     get: db.prepare(`SELECT * FROM leases WHERE resource=?`),
     all: db.prepare(`SELECT * FROM leases ORDER BY resource`),
+    expired: db.prepare(`SELECT * FROM leases WHERE expires_at<=?`),
+    sessionLeases: db.prepare(`SELECT * FROM leases WHERE kind='session'`),
     put: db.prepare(`INSERT OR REPLACE INTO leases(resource,holder_host,holder_name,holder_sid,kind,note,id,acquired_at,expires_at,cap_at,ttl_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
     renew: db.prepare(`UPDATE leases SET expires_at=?, ttl_ms=?, note=?, holder_name=? WHERE resource=? AND id=?`),
     rebind: db.prepare(`UPDATE leases SET holder_sid=?, holder_name=? WHERE resource=? AND holder_host=? AND holder_sid=?`),
     del: db.prepare(`DELETE FROM leases WHERE resource=? AND id=?`),
     count: db.prepare(`SELECT COUNT(*) AS n FROM leases WHERE holder_host=? AND holder_name=?`),
+    countHost: db.prepare(`SELECT COUNT(*) AS n FROM leases WHERE holder_host=?`),
     wait: db.prepare(`INSERT OR IGNORE INTO lease_waiters(resource,host,name,added_at) VALUES (?,?,?,?)`),
     waiters: db.prepare(`SELECT host, name FROM lease_waiters WHERE resource=?`),
     nWaiters: db.prepare(`SELECT COUNT(*) AS n FROM lease_waiters WHERE resource=?`),
+    nWaitersHost: db.prepare(`SELECT COUNT(*) AS n FROM lease_waiters WHERE host=?`),
     unwait: db.prepare(`DELETE FROM lease_waiters WHERE resource=?`),
+    notice: db.prepare(`INSERT INTO lease_notices(host,name,notice,added_at,next_attempt) VALUES (?,?,?,?,0)`),
+    nNotices: db.prepare(`SELECT COUNT(*) AS n FROM lease_notices WHERE host=?`),
+    dueNotices: db.prepare(`SELECT * FROM lease_notices WHERE next_attempt<=? ORDER BY id`),
+    noticesLater: db.prepare(`UPDATE lease_notices SET next_attempt=? WHERE host=?`),
+    noticesNow: db.prepare(`UPDATE lease_notices SET next_attempt=0 WHERE host=? AND next_attempt>0`),
+    delNotice: db.prepare(`DELETE FROM lease_notices WHERE id=?`),
+    gcNotices: db.prepare(`DELETE FROM lease_notices WHERE added_at<?`),
     hold: db.prepare(`INSERT OR REPLACE INTO held(authority,resource,name,sid,kind,ttl_ms,renewed_at) VALUES (?,?,?,?,?,?,?)`),
     renewed: db.prepare(`UPDATE held SET renewed_at=?, ttl_ms=? WHERE authority=? AND resource=? AND sid=?`),
     reheld: db.prepare(`UPDATE held SET sid=?, name=? WHERE sid=?`),
@@ -157,6 +241,8 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
     unhold: db.prepare(`DELETE FROM held WHERE authority=? AND resource=?`),
     unholdBy: db.prepare(`DELETE FROM held WHERE authority=? AND resource=? AND sid=?`),
   }
+  /** A count a statement returned. @param {unknown} row */
+  const n = row => Number(/** @type {any} */ (row)?.n)
   /** @type {Map<string, number>} lease id -> when its holder's session was first found missing */
   const missing = new Map()
   /** @type {Map<string, number>} authority -> when it last couldn't be reached */
@@ -170,7 +256,7 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
     if (!row) return null
     const t = now()
     if (t < row.expires_at && t < row.cap_at) return row
-    end(row, t >= row.cap_at ? 'reached its hard cap' : 'ran out (it was not renewed)')
+    end(row, t >= row.cap_at ? 'cap' : 'expired')
     return null
   }
 
@@ -189,22 +275,66 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
 
   /**
    * End a lease and tell whoever should hear: its holder (unless it let go) and anyone waiting for
-   * it. @param {LeaseRow} row @param {string} why @param {{ tellHolder?: boolean }} [o]
+   * it. @param {LeaseRow} row @param {Why} why @param {{ by?: string, tellHolder?: boolean }} [o] by: who broke it
    */
-  function end(row, why, { tellHolder = true } = {}) {
+  function end(row, why, { by, tellHolder = true } = {}) {
     if (!q.del.run(row.resource, row.id).changes) return
     missing.delete(row.id)
-    const res = `${row.resource}@${host()}`
-    log(`lease on ${res} (${row.holder_name}@${row.holder_host}) ended: it ${why}`)
-    if (tellHolder && row.kind === 'session') {
-      // by name, so a session that restarted under it hears (its leases carry over to it); but a new
-      // agent given the same name later may get it too (#7), so it says which claim it was
-      const at = new Date(row.acquired_at).toISOString().slice(0, 16).replace('T', ' ')
-      notify(`${row.holder_name}@${row.holder_host}`, `nattermatic: your lease on ${res} has ended: it ${why}. You no longer hold it: if you still need ${res}, claim it again before using it, and check nothing changed meanwhile. (It was claimed at ${at} UTC by a session named ${row.holder_name}: if you never claimed ${res}, this was for an earlier session with your name, and you can ignore it.)`)
-    }
+    const holder = `${row.holder_name}@${row.holder_host}`
+    log(`lease on ${row.resource}@${host()} (${holder}) ended: it ${whyText({ why, by })}`)
+    /** @type {Omit<Notice, 'kind'>} */
+    const about = { resource: row.resource, why, ...(by ? { by } : {}), holder, claimed_at: row.acquired_at }
+    if (tellHolder && row.kind === 'session') tell(row.holder_host, row.holder_name, { kind: 'ended', ...about })
     const waiters = /** @type {{ host: string, name: string }[]} */ (q.waiters.all(row.resource))
     q.unwait.run(row.resource)
-    for (const w of waiters) notify(`${w.name}@${w.host}`, `nattermatic: ${res} is free now (${row.holder_name}@${row.holder_host}'s lease ${why}). It isn't yours yet: claim it if you still need it.`)
+    for (const w of waiters) tell(w.host, w.name, { kind: 'free', ...about })
+  }
+
+  /**
+   * A notice for `name` on machine `to`. One for this machine is delivered now; one for another is
+   * queued first, so a machine that can't be reached hears when it's back (within NOTICE_TTL_MS).
+   * @param {string} to @param {string} name @param {Notice} notice
+   */
+  function tell(to, name, notice) {
+    if (to === host()) return tellLocal(name, notice)
+    if (Number(/** @type {any} */ (q.nNotices.get(to)).n) >= MAX_NOTICES_HOST) return log(`${to} has ${MAX_NOTICES_HOST} lease notices waiting: dropping one for ${name}@${to}`)
+    q.notice.run(to, name, JSON.stringify(notice), now())
+    flushNotices().catch(e => log(`lease notices: ${e?.message || e}`))
+  }
+
+  /** @type {Promise<void> | null} */
+  let flushing = null
+  let flushAgain = false
+  /** Hand waiting notices to the machines they're for: machines side by side, each one's in order. */
+  function flushNotices() {
+    if (flushing) { flushAgain = true; return flushing }   // the pass under way goes round again
+    return flushing = flushPass().finally(() => { flushing = null })
+  }
+  async function flushPass() {
+    do {
+      flushAgain = false
+      q.gcNotices.run(now() - NOTICE_TTL_MS)
+      /** @type {Map<string, NoticeRow[]>} */
+      const byHost = new Map()
+      for (const r of /** @type {NoticeRow[]} */ (q.dueNotices.all(now()))) byHost.set(r.host, [...(byHost.get(r.host) || []), r])
+      await Promise.all([...byHost].map(async ([h, rs]) => {
+        for (const r of rs) {
+          let sent
+          try { sent = await tellRemote(h, r.name, JSON.parse(r.notice)) } catch (e) {
+            // not reached: its notices wait, and are tried as soon as it says hello (wakeNotices)
+            q.noticesLater.run(now() + RETRY_MS, h)
+            return log(`could not tell ${r.name}@${h} about a lease (trying again later): ${/** @type {any} */ (e)?.message || e}`)
+          }
+          if (sent === 'dropped') log(`${h} did not take a lease notice for ${r.name}@${h}`)
+          q.delNotice.run(r.id)
+        }
+      }))
+    } while (flushAgain)
+  }
+
+  /** `h` can be reached (it said hello): send what's waiting for it now, not after the retry wait. @param {string} h */
+  function wakeNotices(h) {
+    if (q.noticesNow.run(h).changes) flushNotices().catch(e => log(`lease notices: ${e?.message || e}`))
   }
 
   /**
@@ -222,10 +352,16 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
       return { ok: true, renewed: true, lease: view(/** @type {LeaseRow} */ (q.get.get(resource))) }
     }
     if (row && !(earlierSelf(row, holder) && d.takeover === true)) {
-      if (d.notify === true && Number(/** @type {any} */ (q.nWaiters.get(resource)).n) < MAX_WAITERS) q.wait.run(resource, holder.host, holder.name, t)
+      if (d.notify === true) {
+        if (n(q.nWaitersHost.get(holder.host)) >= MAX_WAITERS_HOST) throw Object.assign(new Error(`agents on ${holder.host} are already waiting for ${MAX_WAITERS_HOST} of this machine's resources`), { status: 429 })
+        if (n(q.nWaiters.get(resource)) < MAX_WAITERS) q.wait.run(resource, holder.host, holder.name, t)
+      }
       return { ok: false, lease: view(row), same_name: earlierSelf(row, holder), notify: d.notify === true }
     }
-    if (!row && Number(/** @type {any} */ (q.count.get(holder.host, holder.name)).n) >= MAX_HELD) throw Object.assign(new Error(`${holder.name}@${holder.host} already holds ${MAX_HELD} leases here`), { status: 429 })
+    if (!row) {
+      if (n(q.count.get(holder.host, holder.name)) >= MAX_HELD) throw Object.assign(new Error(`${holder.name}@${holder.host} already holds ${MAX_HELD} leases here`), { status: 429 })
+      if (n(q.countHost.get(holder.host)) >= MAX_HELD_HOST) throw Object.assign(new Error(`agents on ${holder.host} already hold ${MAX_HELD_HOST} leases here, between them`), { status: 429 })
+    }
     const cap = clamp(d.cap_ms, MAX_CAP_MS, MIN_TTL_MS, MAX_CAP_MS)
     // a takeover hands the lease on as it is (its cap, and anyone waiting for it, stay)
     const id = row?.id ?? crypto.randomUUID(), acquired = row?.acquired_at ?? t, capAt = row?.cap_at ?? t + cap
@@ -264,7 +400,7 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
     const row = current(resource)
     if (!row) return { ok: true, released: false }
     if (!holds(row, holder) && !(earlierSelf(row, holder) && takeover === true)) return { ok: false, lease: view(row), same_name: earlierSelf(row, holder) }
-    end(row, 'was released', { tellHolder: false })
+    end(row, 'released', { tellHolder: false })
     return { ok: true, released: true }
   }
 
@@ -272,7 +408,7 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
   function breakLease({ resource, by }) {
     const row = current(resource)
     if (!row) return { ok: true, broken: false }
-    end(row, `was broken by ${by}`)
+    end(row, 'broken', { by })
     return { ok: true, broken: true, lease: view(row) }
   }
 
@@ -286,10 +422,12 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
    * can't be reached keeps its leases until their ttl.
    */
   async function sweep() {
-    const rows = /** @type {LeaseRow[]} */ (q.all.all()).filter(r => current(r.resource))
+    // by index, not the whole table: a lease's expiry is never later than its cap
+    const t = now()
+    for (const r of /** @type {LeaseRow[]} */ (q.expired.all(t))) end(r, t >= r.cap_at ? 'cap' : 'expired')
     /** @type {Map<string, LeaseRow[]>} */
     const byHost = new Map()
-    for (const r of rows) if (r.kind === 'session') byHost.set(r.holder_host, [...(byHost.get(r.holder_host) || []), r])
+    for (const r of /** @type {LeaseRow[]} */ (q.sessionLeases.all())) byHost.set(r.holder_host, [...(byHost.get(r.holder_host) || []), r])
     await Promise.all([...byHost].map(async ([h, rs]) => {
       /** @type {Set<string> | null} */
       let live = null
@@ -308,7 +446,7 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
         if (now() - since < GONE_GRACE_MS) continue
         const still = current(r.resource)
         // its holder is told, by name: if it's back under that name (a restart), it hears
-        if (still && still.id === r.id) end(still, 'ended because its session had gone')
+        if (still && still.id === r.id) end(still, 'gone')
       }
     }))
   }
@@ -411,7 +549,7 @@ export function createLeases({ db, host, dir, sessions, call, notify, log, now =
     } catch {}
   }
 
-  return { db, claim, renew, rebind, release, breakLease, list, current, view, sweep, noteHeld, noteRenewed, forget, heldRows, renewActive, carryOver, marks }
+  return { db, claim, renew, rebind, release, breakLease, list, current, view, sweep, flushNotices, wakeNotices, noteHeld, noteRenewed, forget, heldRows, renewActive, carryOver, marks }
 }
 
 /** @param {unknown} v @param {number} dflt @param {number} lo @param {number} hi */

@@ -1,7 +1,7 @@
 // The node's lease requests: from this machine (sessions, `natter lease`, the heartbeat), and from
 // other machines about this one's resources. Leases themselves are kept by leases.js; this decides
 // which machine keeps a resource's leases, asks it, and checks what comes back.
-import { parseResource, sessionId, cleanLease, MAX_RESOURCE, SID } from './leases.js'
+import { parseResource, sessionId, cleanLease, cleanNotice, noticeText, MAX_RESOURCE, SID } from './leases.js'
 import { normHost, sanitizeName, errMsg } from './config.js'
 import { httpErr, PeerAnswered } from './errors.js'
 
@@ -16,9 +16,10 @@ import { httpErr, PeerAnswered } from './errors.js'
  *   call: (host: string, method: 'GET' | 'POST', p: string, obj?: object, o?: { timeout?: number }) => Promise<any>,
  *   version: (h: string) => string | null | undefined,
  *   ownedBy: (pids: number[], cwd?: string | null) => [string, { lastActive: number }] | undefined,
- * }} o
+ *   notice: (to: string, body: string) => Promise<unknown>,
+ * }} o notice: a message from leases@ this machine to `to` (a session here, or one elsewhere: then held for it)
  */
-export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeers, routeFor, call, version, ownedBy }) {
+export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeers, routeFor, call, version, ownedBy, notice }) {
   /** The member name of the machine a resource names, or throw. @param {string} h */
   async function authorityFor(h) {
     if (isSelf(h)) return cfg.host
@@ -84,6 +85,38 @@ export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeer
     throw httpErr(400, `unknown lease request "${op}"`)
   }
 
+  /**
+   * A notice from the machine that keeps a lease, for a holder or waiter here. It reaches the session
+   * from leases@ this machine, in this node's own words, built from checked fields: the resource is
+   * the sender's, whatever it says, and nothing it wrote is passed on. 429 or 503 if it can't be
+   * stored now (the sender tries again); 400 if it doesn't add up.
+   * @param {string} from @param {Record<string, any>} d
+   */
+  async function remoteNotice(from, d) {
+    const to = typeof d.to === 'string' && sanitizeName(d.to) === d.to ? d.to : ''
+    const n = cleanNotice(d.notice, from)
+    if (!to || !n) throw httpErr(400, 'bad lease notice')
+    // a holder's notice is about the session it's addressed to
+    await notice(`${to}@${cfg.host}`, noticeText(n.kind === 'ended' ? { ...n, holder: `${to}@${cfg.host}` } : n, from))
+    return { ok: true }
+  }
+
+  /**
+   * Hand a notice about a lease here to the machine its holder or waiter is on, so their node can
+   * deliver it as its own. 'sent', or 'dropped' when that machine isn't a member or refused it;
+   * throws when it can't be reached (the notice waits). A machine on a version without this (404)
+   * is sent the notice as a message from leases@ here, as before: held for it if it's offline.
+   * @param {string} host @param {string} name @param {import('./leases.js').Notice} n
+   */
+  async function sendNotice(host, name, n) {
+    if (!member(host)) return 'dropped'
+    try { await call(host, 'POST', '/v1/lease-notice', { to: name, notice: n }, { timeout: 5000 }) } catch (e) {
+      if (e instanceof PeerAnswered && e.peerStatus === 404) { await notice(`${name}@${host}`, noticeText(n, cfg.host)); return 'sent' }
+      if (e instanceof PeerAnswered && e.peerStatus === 400) return 'dropped'
+      throw e
+    }
+    return 'sent'
+  }
 
   /**
    * A lease request from this machine: a session's tool call (by its name: the node knows which
@@ -136,5 +169,5 @@ export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeer
     return { ...r, resource }
   }
 
-  return { authorityFor, askAuthority, remoteLease, localLease }
+  return { authorityFor, askAuthority, remoteLease, remoteNotice, sendNotice, localLease }
 }
