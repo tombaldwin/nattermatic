@@ -29,7 +29,7 @@ export const HELLO_CONCURRENCY = 2     // offline .local names tie up a DNS (lib
  *   member: (h: string) => import('./types.js').Member | undefined,
  *   removedHost: (h: string) => boolean,
  *   adoptSelfAlias: (name: string) => boolean,
- *   mergeRoster: (records: unknown) => boolean,
+ *   mergeRoster: (records: unknown, from?: string) => boolean,
  *   kick: () => void,
  * }} o kick: start the forwarding loop (a machine became reachable)
  */
@@ -143,7 +143,7 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     // only the status: what another machine writes here would reach sessions and terminals as our own words
     if (r.status < 200 || r.status >= 300) throw new PeerAnswered(host, r.status)
     q.upsertPeer.run(host, null, now(), 0)
-    if (data.records) mergeRoster(data.records)
+    if (data.records) mergeRoster(data.records, member(host)?.fp ?? host)
     return data
   }
 
@@ -161,7 +161,7 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     } catch (e) { throw new Error(e instanceof PinError ? `${addr}: not a machine on this network` : `${addr}: ${errMsg(e)}`) }
     const m = roster.members.get(r.peerFp)
     if (!m) throw new Error(`${addr}: not a machine on this network`)
-    if (r.status === 200 && m.fp !== me.fp) { try { const d = JSON.parse(r.text); mergeRoster(d.records); learnPeers(d.peers); noteVersion(m.host, d.version) } catch {} }
+    if (r.status === 200 && m.fp !== me.fp) { try { const d = JSON.parse(r.text); mergeRoster(d.records, m.fp); learnPeers(d.peers); noteVersion(m.host, d.version) } catch {} }
     return m
   }
 
@@ -280,7 +280,7 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
   /** A member's hello to us: what it knows, and its version. @param {string} host @param {any} d */
   function greeted(host, d) {
     if (q.wake.run(host).changes) kick()
-    mergeRoster(d.records)
+    mergeRoster(d.records, member(host)?.fp ?? host)
     learnPeers(d.peers)
     noteVersion(host, d.version)
   }

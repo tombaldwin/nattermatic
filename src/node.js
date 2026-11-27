@@ -17,7 +17,7 @@ import { openStore, queries } from './store.js'
 import { startDiscovery } from './discovery.js'
 import { gateOk, proveAuth, checkAuth } from './crypto.js'
 import { fingerprint, shortFp, newIdentity } from './cert.js'
-import { Roster, MAX_ROSTER_BYTES } from './roster.js'
+import { Roster, MAX_ROSTER_BYTES, recordBudget } from './roster.js'
 import { exporterOf, PROTO, MAX_BODY as MAX_REQ } from './tls.js'
 import { SEA, PKG_ROOT, readAsset, appBundle } from './self.js'
 import { renameOldDb } from './legacy.js'
@@ -150,8 +150,19 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     // a fixed notice from this machine's node, to a holder or a waiter: it wakes their session
     notify: (to, body) => { localSend({ from: 'leases', to, body }).catch(e => log(`could not tell ${to} about a lease: ${errMsg(e)}`)) },
   })
-  /** Merge membership records from a peer; persist if anything changed. @param {unknown} records */
-  function mergeRoster(records) {
+  const budget = recordBudget()
+  /**
+   * Merge membership records; persist if anything changed. Records from a member (`from`, its
+   * fingerprint) count against its allowance, so it can't make us check thousands of signatures a
+   * request (#9). A newcomer's are a short chain, already capped.
+   * @param {unknown} records @param {string} [from]
+   */
+  function mergeRoster(records, from) {
+    if (from) {
+      const fresh = roster.unseen(records)
+      if (!fresh.length) return false
+      records = fresh.slice(0, budget.take(from, fresh.length))
+    }
     if (!roster.merge(records)) return false
     try { roster.save() } catch (e) { log('could not save the roster:', errMsg(e)) }
     return true

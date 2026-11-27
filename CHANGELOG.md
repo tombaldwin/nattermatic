@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A member can't make a node check thousands of signatures at once.** Each machine takes at most
+  500 new membership records from another in a burst, then 500 a minute; the rest are offered again
+  at the next exchange. Real networks have some tens of records, so nothing changes for them (#9).
+
 ## 0.4.5 — 2026-11-26
 
 The plugin's skill upgrades to its own release too.

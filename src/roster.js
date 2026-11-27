@@ -42,6 +42,32 @@ const MAX_DROPPED = 50                 // adds that didn't count, kept per remov
 // a replaced discovery key still opens other members' gates for this long, so a machine that was
 // offline during a removal can catch up; after that it needs a new invite
 export const DK_GRACE_MS = 14 * 86400_000
+// how many records a node will take in from one member, in a burst and then per minute (#9). Rosters
+// are some tens of records, so this only slows a member that sends thousands of new ones to make us
+// check their signatures; what's left over is offered again at the next exchange
+export const RECORD_BUDGET = 500
+
+/**
+ * An allowance per sender that refills over time: take(key, n) says how many of n it may have now.
+ * @param {{ cap?: number, perMs?: number, now?: () => number }} [opts]
+ */
+export function recordBudget({ cap = RECORD_BUDGET, perMs = 60_000, now = Date.now } = {}) {
+  /** @type {Map<string, { left: number, at: number }>} */
+  const left = new Map()
+  return {
+    /** @param {string} key @param {number} n */
+    take(key, n) {
+      const t = now()
+      const b = left.get(key) ?? { left: cap, at: t }
+      b.left = Math.min(cap, b.left + (t - b.at) * cap / perMs)
+      b.at = t
+      const got = Math.max(0, Math.min(n, Math.floor(b.left)))
+      b.left -= got
+      left.set(key, b)
+      return got
+    },
+  }
+}
 
 /** @typedef {import('./types.js').RosterRecord} RosterRecord */
 /** @typedef {import('./types.js').Member} Member */
@@ -157,6 +183,17 @@ export class Roster {
     let room = MAX_TAKEN
     for (const a of adds().get(r.fp) ?? []) room += !listed.has(a.id) ? a.size : a.made ? SEEN_ENTRY : 0
     return size <= room
+  }
+
+  /**
+   * The records in `list` this roster hasn't seen: the ones merging could cost a signature check.
+   * Snapshots first, then oldest first, so a share of them taken from the front holds the records
+   * the rest depend on.
+   * @param {unknown} list @returns {RosterRecord[]}
+   */
+  unseen(list) {
+    const out = (Array.isArray(list) ? list : []).filter(r => wellFormed(r) && !this.ids.has(recId(r)) && !this.forged.has(recKey(r)))
+    return out.sort((a, b) => Number(b.type === 'snapshot') - Number(a.type === 'snapshot') || a.at - b.at)
   }
 
   /** @param {string} key */

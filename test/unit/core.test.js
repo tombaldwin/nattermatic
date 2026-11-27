@@ -9,7 +9,7 @@ import { nodeAction, Local, StaleError } from '../../src/local.js'
 import { PROTO } from '../../src/tls.js'
 import { signEnvelope, verifyEnvelope, sealBeacon, openBeacon, newDiscoveryKey, randomToken, gateTags, gateOk, proveAuth, checkAuth, signRecord } from '../../src/crypto.js'
 import { newIdentity, fingerprint, certDer } from '../../src/cert.js'
-import { Roster } from '../../src/roster.js'
+import { Roster, recordBudget } from '../../src/roster.js'
 import { invitePrompt } from '../../src/setup.js'
 
 test('normHost adds .local to bare names and normalises case', () => {
@@ -126,6 +126,32 @@ test('roster: founder, adds, removals and the discovery key', () => {
   rc.merge([{ ...rec, sig: signRecord(c.key, rec) }])
   assert.ok(!rc.members.has(d.fp), 'a record signed by a removed machine after its removal does not count')
   assert.equal(fromRemoved.records.length, before)
+})
+
+test('roster: unseen picks out new records, snapshots and the oldest first (#9)', () => {
+  const [a, b, c] = Array.from({ length: 3 }, () => newIdentity())
+  const r = Roster.genesis(a, 'a.local')
+  r.add(a, 'b.local', b.cert); r.add(a, 'c.local', c.cert)
+  const fresh = new Roster({ net: r.net, records: r.records.slice(0, 1) })
+  assert.deepEqual(fresh.unseen([...r.records].reverse()), r.records.slice(1), 'the ones it lacks, oldest first')
+  assert.deepEqual(fresh.unseen([{ type: 'add' }, null, 7]), [], 'only well-formed records')
+  assert.deepEqual(r.unseen(r.records), [], 'nothing it already holds')
+  assert.deepEqual(fresh.unseen('not a list'), [])
+  r.compact(a)
+  assert.equal(fresh.unseen(r.records)[0].type, 'snapshot', 'a snapshot first')
+})
+
+test('record budget: a burst per sender, then a share per minute (#9)', () => {
+  let t = 0
+  const b = recordBudget({ cap: 10, perMs: 1000, now: () => t })
+  assert.equal(b.take('x', 4), 4)
+  assert.equal(b.take('x', 20), 6, 'the rest of the burst')
+  assert.equal(b.take('x', 5), 0, 'then nothing')
+  assert.equal(b.take('y', 5), 5, 'each sender has its own')
+  t = 500
+  assert.equal(b.take('x', 20), 5, 'it refills over time')
+  t = 100_000
+  assert.equal(b.take('x', 20), 10, 'never past the burst')
 })
 
 test('roster: only earlier machines can remove, and a removed machine cannot fight back', () => {
