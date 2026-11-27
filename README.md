@@ -274,7 +274,9 @@ Run `natter doctor` first. It checks everything below and says what to do.
     npm test    # unit tests + multi-node end-to-end: live delivery, offline session, offline machine
                 # via holders, dedupe, poll mode, outsiders, forged and altered messages, strangers
                 # at stored addresses, relays, invites and joining, removal, big backlogs, node
-                # restart, IP/Tailscale aliases
+                # restart, IP/Tailscale aliases, leases
+    npm run test:e2e -- leases setup     # some of the end-to-end groups (messaging, setup, legacy,
+                                         # leases); they run side by side unless you add --serial
 
 The macOS app (nattermatic as a single signed executable, so macOS asks for Local Network access by
 name; see `scripts/build-app.mjs`):
