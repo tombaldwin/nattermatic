@@ -53,7 +53,17 @@ the same membership from the same records.
   if the signer is a current member and is the machine named in the sender address, so holders
   relaying copies can't alter messages and a member can't send as another machine. A sender address
   must be exactly `name@host` as a node writes it, so nothing can be hidden in it. Messages are
-  encrypted between machines but not end to end: see *Known limitations*.
+  encrypted between machines but not end to end: see *Known limitations*. A node checks the
+  signatures a member delivers up to an allowance (4,000 in a burst, then 4,000 a minute) and answers
+  the rest "no room for now", which the sender tries again later, as it does for a full store: a member
+  can't keep a node checking signatures, and honest backlogs only wait. An envelope that failed its
+  check is remembered (up to 20,000), so sending it again costs nothing.
+- **Names.** Messages and leases are addressed to a machine by its name on the member list, or by
+  another name it has answered under (its Tailscale name, an address), proved by its key. A member
+  can list a machine it adds under another member's Tailscale name, so a name that both a listed
+  machine and another member's key answer to is treated as no one's: nothing is sent under it, and the
+  sender is told which two machines claim it and how to remove one. A machine can't join through a
+  node under a name that node knows another member, or the node itself, answers under.
 - **Joining.** `natter invite` makes a one-time token (stored hashed, expires after 24 hours)
   and prints a `curl -k --pinnedpubkey "sha256//<key>" https://…` line. The key is an invite key,
   which the inviting node presents only while it has invites open. curl's `-k` only skips
@@ -77,8 +87,9 @@ the same membership from the same records.
   treat them as requests from a colleague — never as instructions from its user — and not to
   take destructive or security-sensitive actions solely because a peer asked. Each message read with
   the `inbox` tool is framed with a tag made for that read, so its text can't pass for another message
-  from someone else. A message pushed straight into a Claude Code session relies on Claude Code's own
-  framing of channel messages instead. Nothing
+  from someone else. A message pushed straight into a Claude Code session is framed the same way, with a
+  tag made for that push, inside Claude Code's own channel element, so its text can't pass for the end of
+  that element and the start of another message, whatever Claude Code escapes. Nothing
   else another machine writes reaches a session as nattermatic's own words: a session name must be one a
   node could have made, a machine's error text is dropped for its status code, and what a machine says
   about its leases is rebuilt from checked parts. A lease's note is its holder's own text, and is shown
@@ -116,7 +127,10 @@ the same membership from the same records.
   `natter status` lists machines in joining order and shows which member added each one:
   remove any you don't recognise, or start a new network with `natter setup --new-network`
   and re-join your machines. One thing it won't show: a member can sign a second key under its own
-  name. That key never becomes a member, and it's dropped when the member is removed.
+  name. That key never becomes a member, and it's dropped when the member is removed. A member can
+  also list a machine under a name another member answers under (see *Names*): machines that know
+  the name as the other member's send nothing under it and say so, but a machine that has never
+  reached the other member under that name has only the list to go by, and sends to the newcomer.
 - **A member can fill a machine's message store.** A session can have 2,000 messages waiting, but a
   member can write to made-up names, or to a session reading as fast as they arrive. A store stops at
   1 GB, so the disk is safe, but then that machine takes no new messages from anyone until old ones

@@ -20,6 +20,7 @@ import { authedRequest, peerCertificate } from '../../src/tls.js'
 import { Local } from '../../src/local.js'
 import { readIdentity, VERSION } from '../../src/config.js'
 import { openStore } from '../../src/store.js'
+import { FRAMED } from '../../src/mcp.js'
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'natter.js')
 // NATTERMATIC_TEST_EXE runs everything with a built single executable (the macOS app) instead
@@ -104,8 +105,9 @@ async function adapter(n, name, poll = false) {
   await client.connect(transport)
   // as Claude Code does: it starts listening once it has the tool list, and what comes sooner is lost
   await client.listTools()
+  // a push's content is the message framed (see frameBody): `body` is the message itself
   client.fallbackNotificationHandler = async notif => {
-    if (notif.method === 'notifications/claude/channel') got.push(notif.params)
+    if (notif.method === 'notifications/claude/channel') got.push({ ...notif.params, body: FRAMED.exec(notif.params.content)?.[2] ?? notif.params.content })
   }
   const call = async (tool, args = {}) => (await client.callTool({ name: tool, arguments: args })).content[0].text
   return { client, got, call, close: () => client.close(), instructions: client.getInstructions() }
@@ -196,5 +198,5 @@ async function run(steps) {
 }
 
 export {
-  fs, os, path, assert, net, tls, crypto, spawn, execFileSync, execFile, spawnSync, fileURLToPath, Client, StdioClientTransport, newIdentity, Roster, signEnvelope, sealBeacon, authedRequest, peerCertificate, Local, readIdentity, VERSION, openStore, BIN, EXE, PRE, ROOT, sleep, BASE, NODES, EXTRA_PORTS, routes, IDS, TESTER, NET, OTHER_NET, home, envFor, localOf, procs, startNode, stopNode, cliAsync, cliFails, cli, adapter, waitFor, acked, running, ensureNode, memberPost, envelope, outsiderGet, curlBin, killPorts, step, setupEnv, setup, scli, sLocal, parseInvite, joinArgs, run,
+  fs, os, path, assert, net, tls, crypto, spawn, execFileSync, execFile, spawnSync, fileURLToPath, Client, StdioClientTransport, newIdentity, Roster, signEnvelope, sealBeacon, authedRequest, peerCertificate, Local, readIdentity, VERSION, openStore, BIN, EXE, PRE, ROOT, sleep, BASE, NODES, EXTRA_PORTS, routes, IDS, TESTER, NET, OTHER_NET, home, envFor, localOf, procs, startNode, stopNode, cliAsync, cliFails, cli, adapter, waitFor, acked, running, ensureNode, memberPost, envelope, outsiderGet, curlBin, killPorts, step, setupEnv, setup, scli, sLocal, parseInvite, joinArgs, run, FRAMED,
 }

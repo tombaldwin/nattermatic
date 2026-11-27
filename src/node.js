@@ -206,12 +206,12 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     cfg, me, roster, q, peerRow, allPeers, now, log, isSelf, member, mergeRoster,
     removedHost: h => removedHost(h), kick: () => kick(), adoptSelfAlias,
   })
-  const { call, identify, resolveName, probe, notePeer, shareablePeers, hello, helloAll, knownPeers, notMember } = peers
+  const { call, identify, resolveName, probe, notePeer, shareablePeers, hello, helloAll, knownPeers, notMember, contested } = peers
 
   // ---------- messages (see messages.js) ----------
   const messages = createMessages({
     cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias,
-    hub, call, hello, resolveName, notMember, knownPeers,
+    hub, call, hello, resolveName, notMember, contested, knownPeers,
   })
   const { accept, kick, flush, routeFor, removedHost, localSend, fullError } = messages
 
@@ -239,7 +239,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
 
   // ---------- local API helpers ----------
   const { askAuthority, remoteLease, remoteNotice, sendNotice, localLease } = leaseApi({
-    cfg, leases, sessions, now, isSelf, member, knownPeers,
+    cfg, leases, sessions, now, member, knownPeers, notMember,
     routeFor: h => routeFor(h),
     call: (h, m, p, o, opts) => call(h, m, p, o, opts),
     version: h => peerRow(h)?.version,
@@ -287,6 +287,10 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
       // 410: setup answers it by joining again with a new key (a machine isn't told it was removed)
       if (roster.removed.has(fp)) throw httpErr(410, 'this machine\'s key was removed from the network')
       if (roster.byHost.has(host)) throw httpErr(409, `${host} is already a member of this network with a different key. On a member, run \`natter remove ${host}\` first, or join under another name by ending the invite line with \`| sh -s -- --host <name>\``)
+      // a name a member answers under (its Tailscale name, say, as printed in invite lines) can't become
+      // another machine's: every member would then send that name's mail to the newcomer (see contested)
+      const answers = isSelf(host) ? cfg.host : peerRow(host)?.alias_of
+      if (answers && (answers === cfg.host || member(answers))) throw httpErr(409, `${host} is a name ${answers} answers under (its address, or its Tailscale name), so another machine can't join as ${host}. Join under its own name by ending the invite line with \`| sh -s -- --host <name>\``)
       try { roster.add(me, host, pem) } catch (e) { throw httpErr(507, errMsg(e)) }
       if (!roster.members.has(fp)) throw httpErr(500, 'could not add this machine')
       roster.save()
@@ -434,8 +438,9 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         const mine = new Set(Array.isArray(d.mine) ? d.mine.slice(0, 2000) : [])
         try {
           tx(() => {
+            // each costs a signature check, counted against the delivering member's allowance (see checkEnv)
             for (const e of Array.isArray(d.messages) ? d.messages.slice(0, 2000) : []) {
-              const st = accept(e, toPump, mine.has(e?.id) ? peer.host : undefined)
+              const st = accept(e, toPump, mine.has(e?.id) ? peer.host : undefined, peer.fp)
               if (st === 'unknown-sender') unknown.push(e.id)
               else if (st === 'full') noRoom.push(e.id)
               else if (st) results[e.id] = st

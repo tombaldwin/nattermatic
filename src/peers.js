@@ -68,8 +68,30 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     if (peerRow(host)?.version !== v) q.setVersion.run(host, now(), v)
   }
 
+  /**
+   * Two current members claim `host`: it's one's name on the member list, and the other has answered
+   * under it (an alias proved by its key: its Tailscale name, say, or an address). An add says only
+   * that some member called a key by that name, and a member can call a machine it adds by another
+   * member's Tailscale name; an alias can be stale, or come from a spoofed lookup. Neither claim
+   * settles who the user means, so nothing is sent under the name until one of them is removed.
+   * @param {string} host @returns {{ named: import('./types.js').Member, answered: import('./types.js').Member } | null}
+   */
+  function contested(host) {
+    const named = member(host)
+    const answered = named && member(peerRow(host)?.alias_of || '')
+    return named && answered && answered.fp !== named.fp ? { named, answered } : null
+  }
+
   /** Why `host` can't be sent to. @param {string} host */
-  const notMember = host => removedHost(host) ? `${host} was removed from the network` : `${host} is not a known machine on this network (yet)`
+  const notMember = host => {
+    const c = contested(host)
+    if (c) {
+      const adder = roster.members.get(c.named.by)?.host ?? roster.ranked.get(c.named.by)?.host ?? 'a machine since removed'
+      // `natter remove <name>` takes the one on the list: the other keeps its own name
+      return `${host} is two machines' name: ${c.answered.host} has answered under it, and a machine added by ${adder} is listed as ${host}. Nothing is sent to it until one of them is removed (natter remove ${host} removes the listed one, natter remove ${c.answered.host} the other)`
+    }
+    return removedHost(host) ? `${host} was removed from the network` : `${host} is not a known machine on this network (yet)`
+  }
 
   /**
    * Request to another member. The machine at the address must prove it holds that member's key
@@ -317,6 +339,6 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
 
   return {
     call, identify, resolveName, probe, notePeer, learnPeers, shareablePeers, greeted, hello, helloAll, freshRound,
-    knownPeers, notMember, reachedAt: (/** @type {string} */ h) => reachedAt.get(h),
+    knownPeers, notMember, contested, reachedAt: (/** @type {string} */ h) => reachedAt.get(h),
   }
 }

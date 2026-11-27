@@ -18,9 +18,24 @@
 - **A member can't make a node check thousands of signatures at once.** Each machine takes at most
   500 new membership records from another in a burst, then 500 a minute; the rest are offered again
   at the next exchange. Real networks have some tens of records, so nothing changes for them (#9).
+  The same for messages: a machine checks the signatures another delivers up to 4,000 in a burst,
+  then 4,000 a minute, and answers the rest as it does when it has no room, so the sender tries them
+  again later and nothing is lost. A message that failed its check is remembered, so a copy sent
+  again costs nothing.
 - A send (or any tool call or command) cut off while the node was proving itself, because the node
   stopped in the moment it connected, is sent again once a node is up, like one that found nothing on
   the port (#13). Nothing of the request had been sent, so it can't arrive twice.
+- **A member can't take another machine's name for mail.** A member could list a machine it adds
+  under another member's Tailscale name, as printed in invite lines, and every machine would then
+  send that name's messages and lease requests to the newcomer. Now a name that is both a listed
+  machine's and one another member has answered under (proved by its key) is no one's: `send` and
+  the lease tools refuse it, saying which two machines claim it and how to remove one, and anything
+  already queued for it waits. A machine can't join through a node under a name that node knows
+  another member, or the node itself, answers under; the invite says so and how to pick another.
+- **Messages pushed into a channel session are framed.** Like an inbox read, each runs between a
+  start line and an end line carrying a tag made for that message, so its text can't pass for the end
+  of the channel message and the start of another, whatever Claude Code escapes. The meta attributes
+  (from, msg_id, sent_at) are unchanged.
 
 ## 0.4.5 — 2026-11-26
 

@@ -11,7 +11,7 @@ import { httpErr, PeerAnswered } from './errors.js'
  *   leases: ReturnType<typeof import('./leases.js').createLeases>,
  *   sessions: Map<string, { token: string, owner: number, lastActive: number }>,
  *   now: () => number,
- *   isSelf: (h: string) => boolean, member: (h: string) => unknown, knownPeers: () => string[],
+ *   member: (h: string) => unknown, knownPeers: () => string[], notMember: (h: string) => string,
  *   routeFor: (h: string) => Promise<string | null>,
  *   call: (host: string, method: 'GET' | 'POST', p: string, obj?: object, o?: { timeout?: number }) => Promise<any>,
  *   version: (h: string) => string | null | undefined,
@@ -19,14 +19,17 @@ import { httpErr, PeerAnswered } from './errors.js'
  *   notice: (to: string, body: string) => Promise<unknown>,
  * }} o notice: a message from leases@ this machine to `to` (a session here, or one elsewhere: then held for it)
  */
-export function leaseApi({ cfg, leases, sessions, now, isSelf, member, knownPeers, routeFor, call, version, ownedBy, notice }) {
-  /** The member name of the machine a resource names, or throw. @param {string} h */
+export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMember, routeFor, call, version, ownedBy, notice }) {
+  /**
+   * The member name of the machine a resource names, or throw. The same route as for messages, so a
+   * name two machines claim is no one's here either (see contested in peers.js).
+   * @param {string} h
+   */
   async function authorityFor(h) {
-    if (isSelf(h)) return cfg.host
-    if (member(h)) return h
-    const r = await routeFor(h).catch(() => null)
+    const r = await routeFor(h).catch(() => null)     // this machine's and members' names answer at once
     if (r === 'self') return cfg.host
     if (r && member(r)) return r
+    if (member(h)) throw httpErr(409, notMember(h))    // a member name routeFor refused: it's contested
     throw httpErr(404, `${h} is not a machine on this network (machines: ${[cfg.host, ...knownPeers()].join(', ')})`)
   }
 

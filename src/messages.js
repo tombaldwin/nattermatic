@@ -2,13 +2,19 @@
 // the loop that hands messages on to the machine they're for, copies left with other machines while
 // it's offline, and a send from a session or the CLI. Each row's moves are in store.js's MOVES.
 import crypto from 'node:crypto'
-import { signEnvelope, verifyEnvelope } from './crypto.js'
+import { signEnvelope, verifyEnvelope, sha256 } from './crypto.js'
 import { httpErr } from './errors.js'
 import { HELLO_CONCURRENCY } from './peers.js'
+import { recordBudget } from './roster.js'
 import { parseAddr, sanitizeName, errMsg, MAX_TTL_MS } from './config.js'
 
 const MAX_BATCH = 256 << 10            // bytes of envelopes per request (well under the request limit)
 export const MAX_MSG = 64 * 1024
+// signature checks one member may cost this node in a burst, then per minute: twice what a request may
+// carry, so a backlog handed over in batches flows, while a member can't keep a core busy. What's over is
+// answered as 'full', and the sender tries it again later (#9)
+export const CHECK_BUDGET = 4000
+const MAX_FORGED = 20_000              // envelopes that failed their check, remembered so a resent one costs nothing
 const BACKOFF_MAX = 60_000
 const REPLICATE_TO = 3                 // max other nodes that hold a copy for an offline machine
 const IN_FLIGHT_MS = 30_000            // a send being delivered directly is hidden from the flush loop
@@ -45,22 +51,40 @@ const backoff = (/** @type {number} */ n) => Math.min(BACKOFF_MAX, 2000 * 2 ** M
  *   hello: ReturnType<typeof import('./peers.js').createPeers>['hello'],
  *   resolveName: ReturnType<typeof import('./peers.js').createPeers>['resolveName'],
  *   notMember: (h: string) => string,
+ *   contested: ReturnType<typeof import('./peers.js').createPeers>['contested'],
  *   knownPeers: () => string[],
  * }} o
  */
-export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias, hub, call, hello, resolveName, notMember, knownPeers }) {
+export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias, hub, call, hello, resolveName, notMember, contested, knownPeers }) {
   const { pump } = hub
   const dueRows = (/** @type {unknown[]} */ rows) => /** @type {DueRow[]} */ (rows)
 
   /** @type {(r: MessageRow) => Envelope} */
   const envOf = r => ({ id: r.id, from: r.from_addr, to: r.to_addr, body: r.body, sent_at: r.sent_at, expires_at: r.expires_at, sig: r.sig })
 
+  /** @type {Set<string>} envelopes whose signature didn't check out: that can't change, so they aren't checked twice */
+  const forged = new Set()
+  /**
+   * What a failed check is remembered under: the whole envelope, its signature and the key it was
+   * checked against. Never the signature alone (a holder has seen the real one, and could send it on
+   * an altered copy to get the real message refused), and not without the key (a machine back under
+   * a new key, before we heard of it, sends envelopes that will check out once we have).
+   * @param {Envelope} e @param {string} fp
+   */
+  const envKey = (e, fp) => sha256(JSON.stringify([e.id, e.from, e.to, e.sent_at, e.expires_at, e.body, e.sig, fp]))
+  const checks = recordBudget({ cap: CHECK_BUDGET, perMs: 60_000, now })
+  /** @type {Map<string, number>} member -> when it was last logged as over its allowance */
+  const overLogged = new Map()
+
   /**
    * Is this a well-formed envelope signed by the machine it claims to come from? 'unknown-sender'
    * if it names a machine we haven't heard of (yet): it may have joined while we were offline.
-   * @param {any} e @returns {'ok' | 'unknown-sender' | 'bad'}
+   * 'over' if checking it would take member `by` (its key) past its allowance of signature checks:
+   * nothing is said about the envelope, and `by` should try it again later. Nothing cheap to refuse,
+   * and nothing refused before, counts against the allowance.
+   * @param {any} e @param {string} [by] @returns {'ok' | 'unknown-sender' | 'bad' | 'over'}
    */
-  function checkEnv(e) {
+  function checkEnv(e, by) {
     if (!(e && typeof e === 'object' &&
       ['id', 'from', 'to', 'body', 'sig'].every(k => typeof e[k] === 'string') &&
       /^[\w-]{1,64}$/.test(e.id) && e.from.length <= 320 && e.to.length <= 320 &&
@@ -78,11 +102,27 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
     const sender = roster.byHost.get(host)
     if (!sender) {
       const gone = removedKey(host), key = gone && roster.ranked.get(gone)?.publicKey
+      if (!key) return 'unknown-sender'
+      if (by && !checks.take(by, 1)) return over(by)
       // signed by another key, it may be that name's machine back with a new one we haven't heard of.
       // So may a key that was dropped, which we can't check: its holder tries again, and tells us what it knows
-      return key && verifyEnvelope(key, e) ? 'bad' : 'unknown-sender'
+      return verifyEnvelope(key, e) ? 'bad' : 'unknown-sender'
     }
-    return verifyEnvelope(sender.publicKey, e) ? 'ok' : 'bad'
+    const k = envKey(e, sender.fp)
+    if (forged.has(k)) return 'bad'
+    if (by && !checks.take(by, 1)) return over(by)
+    if (verifyEnvelope(sender.publicKey, e)) return 'ok'
+    if (forged.size >= MAX_FORGED) forged.clear()
+    forged.add(k)
+    return 'bad'
+  }
+  /** Say so once a minute per member: the sender sees only 'no room'. @param {string} by @returns {'over'} */
+  function over(by) {
+    if (now() - (overLogged.get(by) || 0) > 60_000) {
+      overLogged.set(by, now())
+      log(`${roster.members.get(by)?.host ?? by} delivered more messages than this machine checks at once: the rest wait for its next try`)
+    }
+    return 'over'
   }
   /** The key of a machine called `host` that was removed, or whose add never counted (it never will). @param {string} host */
   const removedKey = host => {
@@ -125,15 +165,18 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
    * @param {string} [mine] the machine delivering this says its name for the recipient's machine (a
    *   nickname of its own, which we may not know) means us. Believed only from the message's own
    *   sender: a holder could otherwise turn a copy addressed elsewhere into a message for a session here.
+   * @param {string} [by] the key of the member delivering it, whose allowance the signature check
+   *   counts against (see checkEnv); none for a message from this machine
    * @returns {import('./types.js').AcceptResult}
    */
-  function accept(e, toPump, mine) {
+  function accept(e, toPump, mine, by) {
     let to
     /** @type {Envelope} */
     let env
     try {
-      const v = checkEnv(e)
+      const v = checkEnv(e, by)
       if (v === 'unknown-sender') return v
+      if (v === 'over') return 'full'      // the same answer: not stored for now, and it's tried again later
       if (v !== 'ok') return null
       env = /** @type {Envelope} */ (e)
       to = parseAddr(env.to, cfg.host)
@@ -212,13 +255,14 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
   }
 
   /**
-   * Which member should messages for `host` go to? A member name is used as is; any other name
-   * is resolved by asking who answers at its address. 'self' if it turns out to be this machine.
+   * Which member should messages for `host` go to? A member name is used as is, unless another member
+   * has answered under it (see contested): then it's no one's, and nothing goes out under it. Any
+   * other name is resolved by asking who answers at its address. 'self' if it turns out to be this machine.
    * @param {string} host @returns {Promise<string | 'self' | null>}
    */
   async function routeFor(host) {
     if (isSelf(host)) return 'self'
-    if (member(host)) return host
+    if (member(host)) return contested(host) ? null : host
     const alias = peerRow(host)?.alias_of
     if (alias && member(alias)) return alias
     const r = await resolveName(host)
@@ -327,6 +371,8 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
       else if (r) to.host = r
     }
     if (isSelf(to.host)) to.host = cfg.host
+    // a name two machines claim: say so, rather than pick one (see contested in peers.js)
+    if (to.host !== cfg.host && contested(to.host)) throw httpErr(409, notMember(to.host))
     // not a machine on this network (a typo, or a machine that hasn't joined): say so now rather
     // than queue it for days. Names configured as peers (a Tailscale name, an IP) are queued: the
     // machine may just be offline, and is found when it answers.

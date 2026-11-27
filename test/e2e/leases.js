@@ -9,7 +9,7 @@ await run(async () => {
 
   // ---------------- leases ----------------
   const check = (n, res) => spawnSync(EXE, [...PRE, 'lease', 'check', res], { env: envFor(n), encoding: 'utf8' }).stdout
-  const pushed = (sess, re) => waitFor(() => sess.got.some(m => re.test(m.content)), 8000, `a message matching ${re}`)
+  const pushed = (sess, re) => waitFor(() => sess.got.some(m => re.test(m.body)), 8000, `a message matching ${re}`)
 
   await step('leases: one of two agents gets a resource; the other is told who has it, and when it is free', async () => {
     await ensureNode('a'); await ensureNode('b')
