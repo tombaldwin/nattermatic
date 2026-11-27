@@ -29,13 +29,14 @@ async function server(readyAt) {
 
 test('a node that is starting says so, and the client waits for it', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'natter-starting-'))
-  const { s, port, asked } = await server(Date.now() + 700)
+  const ready = Date.now() + 700
+  const { s, port, asked } = await server(ready)
   try {
     const me = newIdentity()
     await assert.rejects(authedRequest({ addr: `127.0.0.1:${port}`, path: '/health', identity: me, accept: new Map(), dks: [], timeout: 1000 }), StartingError)
-    const t0 = Date.now()
     const h = await new Local({ identity: me, port, dir }).health()
-    assert.ok(Date.now() - t0 >= 500, 'it waited for the node to finish starting')
+    // against the moment it was ready, not a stopwatch: a busy machine may take a while to get here
+    assert.ok(Date.now() >= ready, 'it waited for the node to finish starting')
     assert.ok(asked() > 2, 'asking again as it went')
     // ready, and (here) not this machine's node: that's only decided once it has answered for real
     assert.deepEqual(h, { foreign: true })
