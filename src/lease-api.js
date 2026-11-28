@@ -1,7 +1,7 @@
 // The node's lease requests: from this machine (sessions, `natter lease`, the heartbeat), and from
 // other machines about this one's resources. Leases themselves are kept by leases.js; this decides
 // which machine keeps a resource's leases, asks it, and checks what comes back.
-import { parseResource, sessionId, cleanLease, cleanNotice, noticeText, MAX_RESOURCE, SID } from './leases.js'
+import { parseResource, sessionId, cleanLease, MAX_RESOURCE, MAX_HELD, MAX_HELD_HOST, MAX_WAITERS_HOST, SID } from './leases.js'
 import { normHost, sanitizeName, errMsg } from './config.js'
 import { httpErr, PeerAnswered } from './errors.js'
 
@@ -12,14 +12,15 @@ import { httpErr, PeerAnswered } from './errors.js'
  *   sessions: Map<string, { token: string, owner: number, lastActive: number }>,
  *   now: () => number,
  *   member: (h: string) => unknown, knownPeers: () => string[], notMember: (h: string) => string,
+ *   contested?: (h: string) => unknown, aliasOf?: (h: string) => string | null | undefined,
  *   routeFor: (h: string) => Promise<string | null>,
  *   call: (host: string, method: 'GET' | 'POST', p: string, obj?: object, o?: { timeout?: number }) => Promise<any>,
  *   version: (h: string) => string | null | undefined,
  *   ownedBy: (pids: number[], cwd?: string | null) => [string, { lastActive: number }] | undefined,
- *   notice: (to: string, body: string) => Promise<unknown>,
- * }} o notice: a message from leases@ this machine to `to` (a session here, or one elsewhere: then held for it)
+ * }} o contested: is this member name two machines' (see peers.js)? Nothing is asked under it then.
+ *   aliasOf: the member that has answered under this name (its Tailscale name, say), if one has
  */
-export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMember, routeFor, call, version, ownedBy, notice }) {
+export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMember, contested = () => null, aliasOf = () => undefined, routeFor, call, version, ownedBy }) {
   /**
    * The member name of the machine a resource names, or throw. The same route as for messages, so a
    * name two machines claim is no one's here either (see contested in peers.js).
@@ -29,23 +30,30 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
     const r = await routeFor(h).catch(() => null)     // this machine's and members' names answer at once
     if (r === 'self') return cfg.host
     if (r && member(r)) return r
-    if (member(h)) throw httpErr(409, notMember(h))    // a member name routeFor refused: it's contested
+    // a member name routeFor refused, or a name a member has answered under: that name is contested, and
+    // the explanation is the member's
+    const named = member(h) ? h : aliasOf(h)
+    if (named && member(named)) throw httpErr(409, notMember(named))
     throw httpErr(404, `${h} is not a machine on this network (machines: ${[cfg.host, ...knownPeers()].join(', ')})`)
   }
 
   /**
    * Ask the machine that keeps a resource's leases. A machine on a version without leases answers
-   * 404 to any path it doesn't know: say which version it runs, if it has said.
+   * 404 to any path it doesn't know: say which version it runs, if it has said. Its error text is
+   * never shown (see PeerAnswered): what its status means is said here.
    * @param {string} auth @param {Record<string, unknown>} body
    */
   async function askAuthority(auth, body) {
     if (auth === cfg.host) return remoteLease(cfg.host, body)
+    // a name that became two machines' after a lease was taken there (renewals ask by the name kept)
+    if (contested(auth)) throw httpErr(409, notMember(auth))
     let r
     try { r = await call(auth, 'POST', '/v1/lease', body, { timeout: 5000 }) } catch (e) {
       if (e instanceof PeerAnswered && e.peerStatus === 404) {
         const v = version(auth)
         throw httpErr(501, `${auth} runs ${v ? `nattermatic ${v}` : 'an older nattermatic'}, which doesn't have leases: it needs upgrading first`)
       }
+      if (e instanceof PeerAnswered && e.peerStatus === 429) throw httpErr(429, `${auth} refused: this machine's agents already hold as many leases there as it allows (${MAX_HELD_HOST} between them, ${MAX_HELD} under one name), or are waiting on as many of its resources (${MAX_WAITERS_HOST}). Release some first`)
       if (e instanceof PeerAnswered) throw httpErr(502, errMsg(e))
       throw httpErr(503, `${auth} can't be reached, so its resources can't be claimed or released now (${errMsg(e)})`)
     }
@@ -89,39 +97,6 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
   }
 
   /**
-   * A notice from the machine that keeps a lease, for a holder or waiter here. It reaches the session
-   * from leases@ this machine, in this node's own words, built from checked fields: the resource is
-   * the sender's, whatever it says, and nothing it wrote is passed on. 429 or 503 if it can't be
-   * stored now (the sender tries again); 400 if it doesn't add up.
-   * @param {string} from @param {Record<string, any>} d
-   */
-  async function remoteNotice(from, d) {
-    const to = typeof d.to === 'string' && sanitizeName(d.to) === d.to ? d.to : ''
-    const n = cleanNotice(d.notice, from)
-    if (!to || !n) throw httpErr(400, 'bad lease notice')
-    // a holder's notice is about the session it's addressed to
-    await notice(`${to}@${cfg.host}`, noticeText(n.kind === 'ended' ? { ...n, holder: `${to}@${cfg.host}` } : n, from))
-    return { ok: true }
-  }
-
-  /**
-   * Hand a notice about a lease here to the machine its holder or waiter is on, so their node can
-   * deliver it as its own. 'sent', or 'dropped' when that machine isn't a member or refused it;
-   * throws when it can't be reached (the notice waits). A machine on a version without this (404)
-   * is sent the notice as a message from leases@ here, as before: held for it if it's offline.
-   * @param {string} host @param {string} name @param {import('./leases.js').Notice} n
-   */
-  async function sendNotice(host, name, n) {
-    if (!member(host)) return 'dropped'
-    try { await call(host, 'POST', '/v1/lease-notice', { to: name, notice: n }, { timeout: 5000 }) } catch (e) {
-      if (e instanceof PeerAnswered && e.peerStatus === 404) { await notice(`${name}@${host}`, noticeText(n, cfg.host)); return 'sent' }
-      if (e instanceof PeerAnswered && e.peerStatus === 400) return 'dropped'
-      throw e
-    }
-    return 'sent'
-  }
-
-  /**
    * A lease request from this machine: a session's tool call (by its name: the node knows which
    * session that is), a `natter lease` command (a process with its own id), or the heartbeat hook.
    * @param {Record<string, any>} d
@@ -144,22 +119,33 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
     }
     let res
     try { res = parseResource(d.resource, cfg.host) } catch (e) { throw httpErr(400, errMsg(e)) }
-    const auth = await authorityFor(res.host)
+    if (!['check', 'break', 'claim', 'release', 'renew'].includes(op)) throw httpErr(400, `unknown lease request "${op}"`)
+    /** The holder this request is for: a process with its own id, or a session here, by name. */
+    const holderOf = () => {
+      /** @type {import('./leases.js').Holder} */
+      let holder
+      if (d.kind === 'process') {
+        if (!SID.test(String(d.sid || ''))) throw httpErr(400, 'a lease needs the process that holds it')
+        holder = { host: cfg.host, name: sanitizeName(d.name || 'cli'), sid: String(d.sid), kind: 'process' }
+      } else {
+        const s = sessions.get(String(d.name || ''))
+        if (!s?.token) throw httpErr(409, `no session named ${d.name || '(none)'} is connected to this machine's node`)
+        s.lastActive = now()
+        holder = { host: cfg.host, name: String(d.name), sid: sessionId(s.token), kind: 'session' }
+      }
+      return holder
+    }
+    let auth
+    try { auth = await authorityFor(res.host) } catch (e) {
+      // a release of a lease on a machine that can't be asked any more (its name is two machines' now,
+      // say): this machine's record of it goes, so it's no longer renewed, and it runs out there
+      if (op === 'release') { leases.forget(res.host, res.name, holderOf().sid); throw httpErr(/** @type {any} */ (e).status || 500, `${errMsg(e)}. This machine's record of the lease is dropped: it runs out there on its own`) }
+      throw e
+    }
     const resource = `${res.name}@${auth}`
     if (op === 'check') return { ...(await askAuthority(auth, { op, resource: res.name })), resource }
     if (op === 'break') return { ...(await askAuthority(auth, { op, resource: res.name, name: d.by || 'cli' })), resource }
-    /** @type {import('./leases.js').Holder} */
-    let holder
-    if (d.kind === 'process') {
-      if (!SID.test(String(d.sid || ''))) throw httpErr(400, 'a lease needs the process that holds it')
-      holder = { host: cfg.host, name: sanitizeName(d.name || 'cli'), sid: String(d.sid), kind: 'process' }
-    } else {
-      const s = sessions.get(String(d.name || ''))
-      if (!s?.token) throw httpErr(409, `no session named ${d.name || '(none)'} is connected to this machine's node`)
-      s.lastActive = now()
-      holder = { host: cfg.host, name: String(d.name), sid: sessionId(s.token), kind: 'session' }
-    }
-    if (!['claim', 'release', 'renew'].includes(op)) throw httpErr(400, `unknown lease request "${op}"`)
+    const holder = holderOf()
     const ask = () => askAuthority(auth, { op, resource: res.name, name: holder.name, sid: holder.sid, kind: holder.kind, note: d.note, ttl_ms: d.ttl_ms, cap_ms: d.cap_ms, notify: d.notify, takeover: d.takeover })
     // a release is forgotten here whatever happens: if the machine can't be told, the lease runs out
     // (only this holder's own record: a refused release mustn't drop the real holder's)
@@ -167,10 +153,12 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
     const r = await ask()
     if (r.ok && r.lease) {
       if (op === 'claim') leases.noteHeld(auth, res.name, holder, r.lease.ttl_s * 1000)
-      else leases.noteRenewed(auth, res.name, holder.sid, r.lease.ttl_s * 1000)
+      else leases.noteRenewed(auth, res.name, holder.sid, r.lease.ttl_s * 1000, holder.name)
     } else if (op === 'renew') leases.forget(auth, res.name, holder.sid)
+    // it will be told when the resource is free: a notice from that machine about it is this node's to write
+    else if (op === 'claim' && /** @type {any} */ (r).notify === true) leases.noteInterest(auth, res.name, holder.name)
     return { ...r, resource }
   }
 
-  return { authorityFor, askAuthority, remoteLease, remoteNotice, sendNotice, localLease }
+  return { authorityFor, askAuthority, remoteLease, localLease }
 }

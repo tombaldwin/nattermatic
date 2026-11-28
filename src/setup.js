@@ -307,8 +307,9 @@ function clearDb(file) {
     try {
       const left = Number(/** @type {any} */ (db.prepare(`SELECT count(*) n FROM messages WHERE state IN ('pending','queued')`).get()).n)
       leaseTables(db)
-      // (the old network's leases, holders and waiters too: nobody on the new one should see them)
-      db.exec('BEGIN IMMEDIATE; DELETE FROM messages; DELETE FROM invites; DELETE FROM peers; DELETE FROM leases; DELETE FROM lease_waiters; DELETE FROM held; COMMIT')
+      // (the old network's leases, holders, waiters and what its notices would be vouched for too:
+      // nobody on the new one should see them, and a same-named machine there mustn't be believed)
+      db.exec('BEGIN IMMEDIATE; DELETE FROM messages; DELETE FROM invites; DELETE FROM peers; DELETE FROM leases; DELETE FROM lease_waiters; DELETE FROM held; DELETE FROM lease_interest; COMMIT')
       if (left) warn(`dropped ${left} undelivered message(s) for the old network`)
     } finally { db.close() }
   } catch (e) {

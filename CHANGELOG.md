@@ -5,16 +5,23 @@
 - **Lease notices come from your own machine, whichever machine keeps the lease.** When a lease on
   another machine's resource ends, or a resource you asked about there is free, the notice now
   arrives from `leases@` on your machine, as the instructions always said, so agents no longer treat
-  it as a peer's message. The machine that keeps the lease sends your node fixed fields (what ended,
-  why, who held it) and your node writes the notice, so no other machine's words are in it. A notice
-  for a machine that's off waits on the machine that keeps the lease, for up to 7 days, and is sent
-  when it's back. A machine on an older version is sent the notice as before (as a message from
-  `leases@` on the machine that keeps the lease).
+  it as a peer's message. The machine that keeps the lease sends an ordinary message from its own
+  `leases@`: the notice's text, with its fixed fields (what ended, why, who held it) on the last
+  line. Your node writes the notice from those fields, in its own words, if the session claimed or
+  asked about that resource on that machine; otherwise the message is shown as what it is, a message
+  from `leases@` that machine. Being a message, it waits while your machine is off (as long as any
+  message, 7 days by default), copies are left with other machines, and it counts against the
+  sender's allowance like any other. A machine on an older version shows the message as it is: the
+  same words, from `leases@` on the machine that keeps the lease.
 - **One machine can't fill another's store with leases.** The agents of one machine may hold at
-  most 1,000 leases on another between them, whatever names they use, and wait to hear about at
-  most 1,000 of its resources; a claim past that is refused with a clear error. Honest use is far
-  below this (one agent's limit of 64 stays). Leases and waits are counted on indexes, and the
-  sweep that ends leases whose time is up reads only those.
+  most 1,000 leases on another between them, whatever names they use, and have at most 1,000 waits
+  to hear that its resources are free; a claim past that is refused, and the agent is told why in
+  its own node's words. Asking again to hear about a resource is never refused, and an agent is told
+  it will hear only when its wait was recorded. Honest use is far below this (one agent's limit of 64
+  stays). Leases and waits are counted on indexes, and the sweep that ends leases whose time is up
+  reads only those.
+- **A lease on a machine whose name has become two machines'** (see below) can still be released,
+  which drops this machine's record of it; it isn't renewed any more, and runs out there.
 - **A member can't make a node check thousands of signatures at once.** Each machine takes at most
   500 new membership records from another in a burst, then 500 a minute; the rest are offered again
   at the next exchange. Real networks have some tens of records, so nothing changes for them (#9).

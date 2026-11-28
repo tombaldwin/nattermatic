@@ -27,7 +27,7 @@ import { createSessions } from './sessions.js'
 import { createInvites } from './invites.js'
 import { createPeers } from './peers.js'
 import { createMessages } from './messages.js'
-import { createLeases, sessionId, noticeText } from './leases.js'
+import { createLeases, sessionId } from './leases.js'
 import { parsePeer, normHost, machineName, sanitizeName, shQuote, validAddr, tailscaleNameAsync, localIPv4s, errMsg, ensureHomeDir, rosterPath, MAX_TTL_MS, VERSION } from './config.js'
 
 const MAX_JOIN_REQ = 16 << 10          // a join request (before any identity check) is small
@@ -143,15 +143,13 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   const isSelf = (/** @type {string} */ h) => h === cfg.host || selfAliases.has(h)
   /** A current member other than this machine, by name. @param {string} host */
   const member = host => { const m = roster.byHost.get(host); return m && m.fp !== me.fp ? m : undefined }
-  let leaseBusy = false
-  // a notice from this machine's node (leases@ here), with the node's own words: it wakes the session
-  const notice = (/** @type {string} */ to, /** @type {string} */ body) => localSend({ from: 'leases', to, body })
   const leases = createLeases({
     db, host: () => cfg.host, dir: cfg.dir, sessions, log,
     call: (h, m, p, o, opts) => call(h, /** @type {'GET'|'POST'} */ (m), p, /** @type {object | undefined} */ (o), opts),
-    tellLocal: (name, n) => { notice(`${name}@${cfg.host}`, noticeText(n, cfg.host)).catch(e => log(`could not tell ${name}@${cfg.host} about a lease: ${errMsg(e)}`)) },
-    // a holder or waiter on another machine hears from its own node: the notice goes to that node
-    tellRemote: (h, name, n) => sendNotice(h, name, n),
+    // a notice from this machine's node, leases@ here: to a session here it's this node's own words, and
+    // wakes the session; to another machine it's a message like any other (queued while it's off, with
+    // copies), from which its node writes the notice (see leases.js inbound)
+    tell: (to, body) => { localSend({ from: 'leases', to, body, queued: true }).catch(e => log(`could not tell ${to} about a lease: ${errMsg(e)}`)) },
   })
   const budget = recordBudget()
   /**
@@ -212,6 +210,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   const messages = createMessages({
     cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias,
     hub, call, hello, resolveName, notMember, contested, knownPeers,
+    leaseNotice: (h, name, body) => leases.inbound(h, name, body),
   })
   const { accept, kick, flush, routeFor, removedHost, localSend, fullError } = messages
 
@@ -238,12 +237,12 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   }
 
   // ---------- local API helpers ----------
-  const { askAuthority, remoteLease, remoteNotice, sendNotice, localLease } = leaseApi({
-    cfg, leases, sessions, now, member, knownPeers, notMember,
+  const { askAuthority, remoteLease, localLease } = leaseApi({
+    cfg, leases, sessions, now, member, knownPeers, notMember, contested, aliasOf: h => peerRow(h)?.alias_of,
     routeFor: h => routeFor(h),
     call: (h, m, p, o, opts) => call(h, m, p, o, opts),
     version: h => peerRow(h)?.version,
-    ownedBy: hub.ownedBy, notice,
+    ownedBy: hub.ownedBy,
   })
 
   const rosterStatus = () => {
@@ -456,18 +455,13 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         return reply(res, 200, { results, unknown, full: noRoom })
       }
       case 'POST /v1/hello': {
-        if (peer.fp !== me.fp) {
-          peers.greeted(peer.host, d)
-          leases.wakeNotices(peer.host)   // it's reachable: any lease notice waiting for it goes now
-        }
+        if (peer.fp !== me.fp) peers.greeted(peer.host, d)
         return reply(res, 200, { host: cfg.host, peers: shareablePeers(), records: roster.records, version: VERSION })
       }
       case 'GET /v1/sessions':
         return reply(res, 200, { host: cfg.host, sessions: [...sessions.keys()], sids: [...sessions.values()].map(s => sessionId(s.token)).filter(Boolean) })
       case 'POST /v1/lease':
         return reply(res, 200, remoteLease(peer.host, d))
-      case 'POST /v1/lease-notice':             // about a lease that machine keeps, for a holder or waiter here
-        return reply(res, 200, await remoteNotice(peer.host, d))
     }
     return reply(res, 404, { error: 'not found' })
   }
@@ -588,22 +582,23 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     if (m && m.host === host && m.fp !== me.fp) probe(m.host, addr)   // beacons are only hints: the handshake verifies
   }, log) : null
 
+  const leaseEvery = Number(process.env.NATTERMATIC_LEASE_SWEEP_MS) || 15_000
+  /** @type {Set<string>} lease passes under way */
+  const leasePasses = new Set()
+  /** @param {string} what @param {() => Promise<void>} fn */
+  function leasePass(what, fn) {
+    if (leasePasses.has(what)) return
+    leasePasses.add(what)
+    fn().catch(e => log(`lease ${what}:`, errMsg(e))).finally(() => leasePasses.delete(what))
+  }
   const timers = [
     setInterval(flush, 5000),
     setInterval(helloAll, HELLO_EVERY),
     setInterval(gc, 3600_000),
     setInterval(rotate, 60_000),   // an expired invite's key stops being presented
-    setInterval(async () => {
-      if (leaseBusy) return                 // a slow machine must not stack up passes
-      leaseBusy = true
-      try {
-        await Promise.all([
-          leases.sweep().catch(e => log('lease sweep:', errMsg(e))),
-          leases.renewActive((auth, body) => askAuthority(auth, body)).catch(e => log('lease renewal:', errMsg(e))),
-          leases.flushNotices().catch(e => log('lease notices:', errMsg(e))),
-        ])
-      } finally { leaseBusy = false }
-    }, Number(process.env.NATTERMATIC_LEASE_SWEEP_MS) || 15_000),
+    // each on its own: a slow machine must not stack up passes of either, nor hold up the other
+    setInterval(() => leasePass('sweep', () => leases.sweep()), leaseEvery),
+    setInterval(() => leasePass('renewal', () => leases.renewActive((auth, body) => askAuthority(auth, body))), leaseEvery),
   ]
   helloAll()
   kick()

@@ -99,14 +99,22 @@ the same membership from the same records.
   isn't an agent tool, but it isn't locked down either: `natter lease break`, from a terminal on any
   member machine, ends any lease, and so can an agent there that's allowed to run commands. Leases
   are advisory, and the holder is told who broke it. Genuine lease notices come only from
-  `leases@` on the holder's own machine: the machine that keeps a lease sends the holder's (or a
-  waiter's) node fixed fields about it (what ended, why, who held it), over the authenticated
-  connection between members, and that node writes the notice itself. So a member can only have
-  the fixed notices about its own resources delivered, with no words of its own in them. A machine
-  on an older version, without this, gets the notice as a message from `leases@` on the machine that
-  keeps the lease instead, which agents are told to treat as a peer's message. The heartbeat hook that renews
-  a session's leases sends only process ids to the local node; it never reads the tool call it
-  follows.
+  `leases@` on the holder's own machine. The machine that keeps a lease sends the holder (or a
+  waiter) an ordinary signed message from its own `leases@`, with the notice's fixed fields (what
+  ended, why, who held it) on its last line. The holder's node writes the notice itself, from those
+  fields, only if the message's signer is the machine the resource is on (the resource is named for
+  the sender, whatever the message says) and the session it's for claimed, renewed or asked about
+  that resource on that machine, as far as this node knows, within the last 34 days (a lease's 4-hour
+  cap, plus the 30 days a message may take). The holder it names is the session it's for. The other
+  fields are a name and a machine as a node writes them (lower-case letters, digits and `. _ -`, up to
+  48 characters; `: / +` too in a resource, up to 200), or a code. So a member can have your node say,
+  as its own, that a lease on one of its resources ended, or that one is free, to a session that
+  dealt with that resource there, and nothing else: no words of its own, and nothing to a session
+  that never dealt with it. Any other message from `leases@` another machine (an older version's
+  notice, say, or a made-up one) is shown as what it is, a message from `leases@` that machine, which
+  agents are told to treat as a peer's message. A machine on an older version shows every notice
+  that way. The heartbeat hook that renews a session's leases sends only process ids to the local
+  node; it never reads the tool call it follows.
 - **Waking a session.** Setup adds a Claude Code hook that waits in the background and wakes an idle
   session when a message arrives. What it shows Claude is fixed text saying a message is waiting:
   nothing another agent wrote comes through the hook. Claude reads the message with the `inbox` tool,
@@ -194,10 +202,10 @@ the same membership from the same records.
   invite lines from your own machines.
 - **Leases have limits of their own, not the message store's.** A member can claim made-up
   resources on your machine, but its agents hold at most 1,000 leases there between them (64 under
-  one name), wait to hear about at most 1,000 resources, and have at most 2,000 notices waiting for
-  them while their machine is off; a claim past a limit is refused. Each lease ends within 4 hours,
-  and a list shows at most 1,000. So leases take a few megabytes at most, and can't fill the store
-  that messages share with them.
+  one name) and have at most 1,000 waits to hear that its resources are free; a claim past a limit
+  is refused. Each lease ends within 4 hours, and a list shows at most 1,000. So leases take a few
+  megabytes at most, and can't fill the store that messages share with them. Notices to other
+  machines are messages, under the message store's limits.
 - **Agents on a machine aren't separately authenticated.** Any process running as your user can
   send as any session name on that machine.
 - **Invites are credentials until used.** Anyone who gets an unused invite line within 24 hours can

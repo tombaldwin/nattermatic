@@ -53,9 +53,11 @@ const backoff = (/** @type {number} */ n) => Math.min(BACKOFF_MAX, 2000 * 2 ** M
  *   notMember: (h: string) => string,
  *   contested: ReturnType<typeof import('./peers.js').createPeers>['contested'],
  *   knownPeers: () => string[],
- * }} o
+ *   leaseNotice?: (fromHost: string, toName: string, body: string) => string | null,
+ * }} o leaseNotice: a message from leases@ another member, for a session here: the notice this node
+ *   writes for it in its own words (see leases.js inbound), or null to deliver the message as it is
  */
-export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias, hub, call, hello, resolveName, notMember, contested, knownPeers }) {
+export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias, hub, call, hello, resolveName, notMember, contested, knownPeers, leaseNotice = () => null }) {
   const { pump } = hub
   const dueRows = (/** @type {unknown[]} */ rows) => /** @type {DueRow[]} */ (rows)
 
@@ -136,7 +138,8 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
    * a different message reusing an id someone has seen is refused, not reported as delivered. (The
    * same message, not the same signature: a copy can carry another encoding of it, and the envelope
    * has been verified by now. Nothing keeps the text of what it has passed on.)
-   * @param {Envelope} e @param {string} toHost @param {string} toName @param {'inbox' | 'held'} role @param {'queued' | 'pending'} state
+   * @param {Envelope} e @param {string} toHost @param {string} toName @param {'inbox' | 'held'} role
+   * @param {'queued' | 'pending' | 'delivered'} state delivered: read on arrival (a lease notice this node rewrote)
    */
   function store(e, toHost, toName, role, state) {
     if (q.insert.run(e.id, e.from, e.to, toHost, toName, e.body, e.sent_at, e.expires_at, e.sig, role, state, 0, now()).changes) return true
@@ -187,7 +190,13 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
     if (env.expires_at <= now()) return 'expired'
     if (isSelf(to.host) || (mine && mine === parseAddr(env.from, '').host && !member(to.host) && !removedHost(to.host))) {
       if (full(cfg.host, to.name) && !msgRow(env.id)) return 'full'
-      if (!store(env, cfg.host, to.name, 'inbox', 'queued')) return null
+      // a notice from leases@ another machine about a lease a session here holds or waits for: this
+      // node writes it, in its own words, as leases@ here. The envelope is kept, read, so one that's
+      // sent again (a lost answer) is answered as before and not written twice
+      const from = parseAddr(env.from, '')
+      const own = from.name === 'leases' && !isSelf(from.host) && !msgRow(env.id) ? leaseNotice(from.host, to.name, env.body) : null
+      if (!store(env, cfg.host, to.name, 'inbox', own ? 'delivered' : 'queued')) return null
+      if (own) ownMessage('leases', to.name, own)
       q.claim.run(cfg.host, to.name, now(), env.id)
       const live = hub.awake(to.name)               // before pumping: a wait ends once it has woken the session
       if (toPump) toPump.add(to.name)
@@ -356,7 +365,21 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
   }
 
 
-  /** @param {{ from?: unknown, to?: unknown, body?: unknown, ttl_ms?: unknown }} d */
+  /**
+   * A message from this node to a session here, in the node's own words (a lease notice), stored for
+   * it now. @param {string} fromName @param {string} toName @param {string} body
+   */
+  function ownMessage(fromName, toName, body) {
+    /** @type {Omit<Envelope, 'sig'>} */
+    const u = { id: crypto.randomUUID(), from: `${fromName}@${cfg.host}`, to: `${toName}@${cfg.host}`, body, sent_at: now(), expires_at: now() + cfg.ttlMs }
+    q.insert.run(u.id, u.from, u.to, cfg.host, toName, u.body, u.sent_at, u.expires_at, signEnvelope(me.key, u), 'inbox', 'queued', 0, now())
+  }
+
+  /**
+   * @param {{ from?: unknown, to?: unknown, body?: unknown, ttl_ms?: unknown, queued?: unknown }} d
+   *   queued: for another machine, leave it to the forwarding loop (handed over with whatever else is
+   *   due for that machine, in one request) rather than try a direct hand-off now: the node's own notices
+   */
   async function localSend(d) {
     if (typeof d.body !== 'string' || !d.body) throw httpErr(400, 'message body required')
     const body = /** @type {any} */ (d.body).toWellFormed().replaceAll('\0', '\uFFFD')     // what the store can give back unchanged
@@ -401,6 +424,11 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
       if (st === 'full') throw fullError(e.to)
       if (!st) throw httpErr(500, 'could not queue message')
       return { id: e.id, to: e.to, status: `${d.to !== e.to && String(d.to).includes('@') ? `${parseAddr(d.to, cfg.host).host} is this machine — ` : ''}${hub.status(to.name, st === 'live')}` }
+    }
+    if (d.queued === true) {
+      q.insert.run(e.id, e.from, e.to, to.host, to.name, e.body, e.sent_at, e.expires_at, e.sig, 'outbox', 'pending', 0, now())
+      kick()
+      return { id: e.id, to: e.to, status: `queued for ${to.host}` }
     }
     // hidden from the flush loop while we try the direct hand-off, so it isn't sent twice
     inFlight.add(e.id)
