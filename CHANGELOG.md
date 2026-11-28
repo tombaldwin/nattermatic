@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.6 — 2026-11-28
 
 - **Lease notices come from your own machine, whichever machine keeps the lease.** When a lease on
   another machine's resource ends, or a resource you asked about there is free, the notice now

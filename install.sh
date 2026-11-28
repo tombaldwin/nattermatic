@@ -16,7 +16,7 @@ done
 # The release this installer installs: the app, the npm package and Node.js below are all pinned to
 # it, so the installer from a release's tag installs exactly that release. Bumped with the version
 # (docs/releasing.md; test/unit/manifests.test.js checks it).
-RELEASE=0.4.5
+RELEASE=0.4.6
 PKG="${NATTERMATIC_PKG:-nattermatic@$RELEASE}"
 NATTERMATIC_ORIG_PATH="$PATH"; export NATTERMATIC_ORIG_PATH
 TMP=$(mktemp -d)

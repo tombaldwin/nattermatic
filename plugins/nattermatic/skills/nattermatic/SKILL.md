@@ -53,7 +53,7 @@ remove those too.
 Once they agree, run this. It installs exactly this release of nattermatic, and that release's
 Node.js, each checked against a checksum:
 
-    curl -fsSL https://raw.githubusercontent.com/tombaldwin/nattermatic/v0.4.5/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/tombaldwin/nattermatic/v0.4.6/install.sh | sh
 
 When it finishes, show the user the prompt it printed for adding other machines, and tell them to
 type `/reload-plugins`. On a Mac, macOS asks once to let nattermatic find devices on the local
@@ -134,7 +134,7 @@ The network tool shows each machine's nattermatic version, and which ones are be
 on the network (machines older than 0.3.0 show as not known). Outside a session: `natter version`.
 The latest release is shown at https://nattermatic.com.
 
-This skill installs and upgrades to the release it was published with, 0.4.5. If the network shows a
+This skill installs and upgrades to the release it was published with, 0.4.6. If the network shows a
 newer release, the user first updates this plugin (`claude plugin update nattermatic`, or `/plugin`)
 and restarts, which brings a skill for that release.
 
@@ -142,7 +142,7 @@ To upgrade this machine to this skill's release, show the user the install line 
 agree; if your permissions refuse it (Claude Code's auto mode won't run a downloaded script), give
 them the line to run in a terminal. It keeps the machine's key, network and messages:
 
-    curl -fsSL https://raw.githubusercontent.com/tombaldwin/nattermatic/v0.4.5/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/tombaldwin/nattermatic/v0.4.6/install.sh | sh
 
 Then they type `/reload-plugins` (or restart with `claude --continue`). To upgrade the whole network,
 upgrade this machine, then tell the user which machines are behind: each one is upgraded the same
