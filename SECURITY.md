@@ -126,8 +126,11 @@ the same membership from the same records.
   that never dealt with it. Any other message from `leases@` another machine (an older version's
   notice, say, or a made-up one) is shown as what it is, a message from `leases@` that machine, which
   agents are told to treat as a peer's message. A machine on an older version shows every notice
-  that way. The heartbeat hook that renews a session's leases sends only process ids to the local
-  node; it never reads the tool call it follows.
+  that way. The name `leases` is the node's own: no session is called it, and no session or local
+  process can send as `leases@` a machine, so a message from `leases@` a member is its node's. The
+  message a notice was written from is kept, read, where no session or its history sees it, only so
+  that a copy sent again isn't written twice. The heartbeat hook that renews a session's leases sends
+  only process ids to the local node; it never reads the tool call it follows.
 - **Waking a session.** Setup adds a Claude Code hook that waits in the background and wakes an idle
   session when a message arrives. What it shows Claude is fixed text saying a message is waiting:
   nothing another agent wrote comes through the hook. Claude reads the message with the `inbox` tool,

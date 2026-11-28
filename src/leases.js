@@ -60,6 +60,10 @@ const RETRY_MS = 60_000               // a machine that couldn't be reached is t
 export const INTEREST_MS = MAX_CAP_MS + MAX_MESSAGE_TTL_MS
 /** The last line of a notice sent to another machine: the fixed fields, for the node there. */
 export const NOTICE_TAG = 'lease-notice: '
+/** The code on a 429 for a limit on one machine's agents (MAX_HELD, MAX_HELD_HOST, MAX_WAITERS_HOST): the asking node says what it means. */
+export const LIMIT_CODE = 'lease-limit'
+/** @param {string} message */
+const limitErr = message => Object.assign(new Error(message), { status: 429, code: LIMIT_CODE })
 export const SID = /^[\w-]{16,64}$/
 
 /** @typedef {{ host: string, name: string, sid: string, kind: 'session' | 'process' }} Holder */
@@ -213,7 +217,6 @@ export function leaseTables(db) {
     CREATE INDEX IF NOT EXISTS ix_leases_expiry ON leases(expires_at);
     CREATE INDEX IF NOT EXISTS ix_leases_holder ON leases(holder_host, holder_name);
     CREATE INDEX IF NOT EXISTS ix_lease_waiters_host ON lease_waiters(host);
-    DROP TABLE IF EXISTS lease_notices;
   `)
 }
 
@@ -338,15 +341,15 @@ export function createLeases({ db, host, dir, sessions, call, tell: send, log, n
       if (d.notify === true) {
         waits = !!q.waiting.get(resource, holder.host, holder.name)
         if (!waits) {
-          if (n(q.nWaitersHost.get(holder.host)) >= MAX_WAITERS_HOST) throw Object.assign(new Error(`agents on ${holder.host} already have ${MAX_WAITERS_HOST} waits on this machine's resources between them`), { status: 429 })
+          if (n(q.nWaitersHost.get(holder.host)) >= MAX_WAITERS_HOST) throw limitErr(`agents on ${holder.host} already have ${MAX_WAITERS_HOST} waits on this machine's resources between them`)
           if (n(q.nWaiters.get(resource)) < MAX_WAITERS) waits = q.wait.run(resource, holder.host, holder.name, t).changes > 0
         }
       }
       return { ok: false, lease: view(row), same_name: earlierSelf(row, holder), notify: waits }
     }
     if (!row) {
-      if (n(q.count.get(holder.host, holder.name)) >= MAX_HELD) throw Object.assign(new Error(`${holder.name}@${holder.host} already holds ${MAX_HELD} leases here`), { status: 429 })
-      if (n(q.countHost.get(holder.host)) >= MAX_HELD_HOST) throw Object.assign(new Error(`agents on ${holder.host} already hold ${MAX_HELD_HOST} leases here, between them`), { status: 429 })
+      if (n(q.count.get(holder.host, holder.name)) >= MAX_HELD) throw limitErr(`${holder.name}@${holder.host} already holds ${MAX_HELD} leases here`)
+      if (n(q.countHost.get(holder.host)) >= MAX_HELD_HOST) throw limitErr(`agents on ${holder.host} already hold ${MAX_HELD_HOST} leases here, between them`)
     }
     const cap = clamp(d.cap_ms, MAX_CAP_MS, MIN_TTL_MS, MAX_CAP_MS)
     // a takeover hands the lease on as it is (its cap, and anyone waiting for it, stay)
@@ -438,6 +441,26 @@ export function createLeases({ db, host, dir, sessions, call, tell: send, log, n
     }))
   }
 
+  /**
+   * What a version before notices were messages left: its queue of notices for other machines
+   * (lease_notices), sent now as messages, then dropped; and the leases held here, whose holders would
+   * otherwise get a notice from another machine's leases@ as it is, vouched for as a claim is (interest).
+   * Nothing to do on a fresh store, or a second time.
+   */
+  function migrate() {
+    if (db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='lease_notices'`).get()) {
+      const rows = /** @type {{ host: string, name: string, notice: string }[]} */ (db.prepare(`SELECT host, name, notice FROM lease_notices ORDER BY id`).all())
+      for (const r of rows) {
+        let n = null
+        try { n = cleanNotice(JSON.parse(r.notice), host()) } catch {}
+        if (n) tell(r.host, r.name, n)
+      }
+      if (rows.length) log(`${rows.length} lease notice(s) waiting from before the upgrade are sent as messages`)
+      db.exec(`DROP TABLE lease_notices`)
+    }
+    db.prepare(`INSERT OR IGNORE INTO lease_interest(authority,resource,name,until) SELECT authority, resource, name, ? FROM held WHERE authority<>?`).run(now() + INTEREST_MS, host())
+  }
+
   // ---------------- the holder side: leases this machine's sessions hold, anywhere ----------------
 
   /**
@@ -452,8 +475,12 @@ export function createLeases({ db, host, dir, sessions, call, tell: send, log, n
     noteInterest(authority, resource, holder.name)
     marks()
   }
-  /** Forget a lease held here: `sid`'s, if given (another holder here may have it now). @param {string} authority @param {string} resource @param {string} [sid] */
-  function forget(authority, resource, sid) { if (sid) q.unholdBy.run(authority, resource, sid); else q.unhold.run(authority, resource); marks() }
+  /** Forget a lease held here: `sid`'s, if given (another holder here may have it now). Was there one? @param {string} authority @param {string} resource @param {string} [sid] */
+  function forget(authority, resource, sid) {
+    const r = sid ? q.unholdBy.run(authority, resource, sid) : q.unhold.run(authority, resource)
+    marks()
+    return r.changes > 0
+  }
   /** @param {string} authority @param {string} resource @param {string} sid @param {number} ttl @param {string} name the holder's name now (it may have changed on a reconnect) */
   function noteRenewed(authority, resource, sid, ttl, name) { q.renewed.run(now(), ttl, authority, resource, sid); noteInterest(authority, resource, name) }
   const heldRows = () => /** @type {HeldRow[]} */ (q.held.all())
@@ -575,7 +602,7 @@ export function createLeases({ db, host, dir, sessions, call, tell: send, log, n
     } catch {}
   }
 
-  return { db, claim, renew, rebind, release, breakLease, list, current, view, sweep, noteHeld, noteRenewed, noteInterest, inbound, forget, heldRows, renewActive, carryOver, marks }
+  return { db, migrate, claim, renew, rebind, release, breakLease, list, current, view, sweep, noteHeld, noteRenewed, noteInterest, inbound, forget, heldRows, renewActive, carryOver, marks }
 }
 
 /** @param {unknown} v @param {number} dflt @param {number} lo @param {number} hi */

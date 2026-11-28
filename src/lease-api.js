@@ -1,7 +1,7 @@
 // The node's lease requests: from this machine (sessions, `natter lease`, the heartbeat), and from
 // other machines about this one's resources. Leases themselves are kept by leases.js; this decides
 // which machine keeps a resource's leases, asks it, and checks what comes back.
-import { parseResource, sessionId, cleanLease, MAX_RESOURCE, MAX_HELD, MAX_HELD_HOST, MAX_WAITERS_HOST, SID } from './leases.js'
+import { parseResource, sessionId, cleanLease, MAX_RESOURCE, MAX_HELD, MAX_HELD_HOST, MAX_WAITERS_HOST, SID, LIMIT_CODE } from './leases.js'
 import { normHost, sanitizeName, errMsg } from './config.js'
 import { httpErr, PeerAnswered } from './errors.js'
 
@@ -12,15 +12,16 @@ import { httpErr, PeerAnswered } from './errors.js'
  *   sessions: Map<string, { token: string, owner: number, lastActive: number }>,
  *   now: () => number,
  *   member: (h: string) => unknown, knownPeers: () => string[], notMember: (h: string) => string,
- *   contested?: (h: string) => unknown, aliasOf?: (h: string) => string | null | undefined,
+ *   contested?: (h: string) => unknown, nameOf?: (h: string) => string,
  *   routeFor: (h: string) => Promise<string | null>,
  *   call: (host: string, method: 'GET' | 'POST', p: string, obj?: object, o?: { timeout?: number }) => Promise<any>,
  *   version: (h: string) => string | null | undefined,
  *   ownedBy: (pids: number[], cwd?: string | null) => [string, { lastActive: number }] | undefined,
  * }} o contested: is this member name two machines' (see peers.js)? Nothing is asked under it then.
- *   aliasOf: the member that has answered under this name (its Tailscale name, say), if one has
+ *   nameOf: the member name a name is, or stands for (a member has answered under it: its Tailscale
+ *   name, say), see peers.js
  */
-export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMember, contested = () => null, aliasOf = () => undefined, routeFor, call, version, ownedBy }) {
+export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMember, contested = () => null, nameOf = h => h, routeFor, call, version, ownedBy }) {
   /**
    * The member name of the machine a resource names, or throw. The same route as for messages, so a
    * name two machines claim is no one's here either (see contested in peers.js).
@@ -32,8 +33,8 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
     if (r && member(r)) return r
     // a member name routeFor refused, or a name a member has answered under: that name is contested, and
     // the explanation is the member's
-    const named = member(h) ? h : aliasOf(h)
-    if (named && member(named)) throw httpErr(409, notMember(named))
+    const named = nameOf(h)
+    if (member(named)) throw httpErr(409, notMember(named))
     throw httpErr(404, `${h} is not a machine on this network (machines: ${[cfg.host, ...knownPeers()].join(', ')})`)
   }
 
@@ -53,7 +54,11 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
         const v = version(auth)
         throw httpErr(501, `${auth} runs ${v ? `nattermatic ${v}` : 'an older nattermatic'}, which doesn't have leases: it needs upgrading first`)
       }
-      if (e instanceof PeerAnswered && e.peerStatus === 429) throw httpErr(429, `${auth} refused: this machine's agents already hold as many leases there as it allows (${MAX_HELD_HOST} between them, ${MAX_HELD} under one name), or are waiting on as many of its resources (${MAX_WAITERS_HOST}). Release some first`)
+      // at its limits, if it says so (by code: never by its words); refused for any other reason, a plain "later"
+      if (e instanceof PeerAnswered && e.peerStatus === 429) {
+        if (e.peerCode === LIMIT_CODE) throw httpErr(429, `${auth} refused: this machine's agents already hold as many leases there as it allows (${MAX_HELD_HOST} between them, ${MAX_HELD} under one name), or are waiting on as many of its resources (${MAX_WAITERS_HOST}). Release some first`)
+        throw httpErr(429, `${auth} refused for now (too many requests): try again later`)
+      }
       if (e instanceof PeerAnswered) throw httpErr(502, errMsg(e))
       throw httpErr(503, `${auth} can't be reached, so its resources can't be claimed or released now (${errMsg(e)})`)
     }
@@ -138,9 +143,13 @@ export function leaseApi({ cfg, leases, sessions, now, member, knownPeers, notMe
     let auth
     try { auth = await authorityFor(res.host) } catch (e) {
       // a release of a lease on a machine that can't be asked any more (its name is two machines' now,
-      // say): this machine's record of it goes, so it's no longer renewed, and it runs out there
-      if (op === 'release') { leases.forget(res.host, res.name, holderOf().sid); throw httpErr(/** @type {any} */ (e).status || 500, `${errMsg(e)}. This machine's record of the lease is dropped: it runs out there on its own`) }
-      throw e
+      // say): this machine's record of it goes (kept under the machine's member name, whatever name the
+      // request used), so it's no longer renewed, and it runs out there
+      if (op !== 'release') throw e
+      let dropped = false
+      try { dropped = leases.forget(nameOf(res.host), res.name, holderOf().sid) } catch {}     // no such session: nothing of its to drop
+      if (!dropped) throw e
+      throw httpErr(/** @type {any} */ (e).status || 500, `${errMsg(e)}. This machine's record of the lease is dropped: it runs out there on its own`)
     }
     const resource = `${res.name}@${auth}`
     if (op === 'check') return { ...(await askAuthority(auth, { op, resource: res.name })), resource }

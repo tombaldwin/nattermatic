@@ -87,6 +87,10 @@ export function validAddr(a) {
   return !!m && Number(m[2]) > 0 && Number(m[2]) < 65536
 }
 
+// sender names the node uses for itself (lease notices come from leases@): no session is called one, and
+// no session or local client can send as one, here or to another machine
+export const NODE_NAMES = new Set(['leases'])
+
 /** @param {unknown} n */
 export function sanitizeName(n) {
   const s = String(n || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+/, '').slice(0, 48).replace(/[-.]+$/, '')

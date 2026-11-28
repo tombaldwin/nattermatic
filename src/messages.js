@@ -6,7 +6,7 @@ import { signEnvelope, verifyEnvelope, sha256 } from './crypto.js'
 import { httpErr } from './errors.js'
 import { HELLO_CONCURRENCY } from './peers.js'
 import { recordBudget } from './roster.js'
-import { parseAddr, sanitizeName, errMsg, MAX_TTL_MS } from './config.js'
+import { parseAddr, sanitizeName, errMsg, MAX_TTL_MS, NODE_NAMES } from './config.js'
 
 const MAX_BATCH = 256 << 10            // bytes of envelopes per request (well under the request limit)
 export const MAX_MSG = 64 * 1024
@@ -51,13 +51,14 @@ const backoff = (/** @type {number} */ n) => Math.min(BACKOFF_MAX, 2000 * 2 ** M
  *   hello: ReturnType<typeof import('./peers.js').createPeers>['hello'],
  *   resolveName: ReturnType<typeof import('./peers.js').createPeers>['resolveName'],
  *   notMember: (h: string) => string,
+ *   nameOf: ReturnType<typeof import('./peers.js').createPeers>['nameOf'],
  *   contested: ReturnType<typeof import('./peers.js').createPeers>['contested'],
  *   knownPeers: () => string[],
  *   leaseNotice?: (fromHost: string, toName: string, body: string) => string | null,
  * }} o leaseNotice: a message from leases@ another member, for a session here: the notice this node
  *   writes for it in its own words (see leases.js inbound), or null to deliver the message as it is
  */
-export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias, hub, call, hello, resolveName, notMember, contested, knownPeers, leaseNotice = () => null }) {
+export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias, hub, call, hello, resolveName, notMember, nameOf, contested, knownPeers, leaseNotice = () => null }) {
   const { pump } = hub
   const dueRows = (/** @type {unknown[]} */ rows) => /** @type {DueRow[]} */ (rows)
 
@@ -149,15 +150,6 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
     once(by, `${name(by)} delivered more messages${checks.has(by) ? ` from ${name(signer)}` : ''} than this machine checks at once: the rest wait for its next try`)
     return false
   }
-  /**
-   * Is this a well-formed envelope signed by the machine it claims to come from? The two checks above,
-   * as one: `by`, when given, is charged as checkSig says.
-   * @param {any} e @param {string} [by] @returns {'ok' | 'unknown-sender' | 'bad' | 'over'}
-   */
-  function checkEnv(e, by) {
-    const s = shape(e)
-    return s ? checkSig(e, s.from.host, by) : 'bad'
-  }
   /** The key of a machine called `host` that was removed, or whose add never counted (it never will). @param {string} host */
   const removedKey = host => {
     const fp = [...roster.records].reverse().find(r => r.type === 'add' && r.host === host)?.fp ?? [...roster.ranked.values()].reverse().find(m => m.host === host)?.fp
@@ -170,8 +162,8 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
    * a different message reusing an id someone has seen is refused, not reported as delivered. (The
    * same message, not the same signature: a copy can carry another encoding of it, and the envelope
    * has been verified by now. Nothing keeps the text of what it has passed on.)
-   * @param {Envelope} e @param {string} toHost @param {string} toName @param {'inbox' | 'held'} role
-   * @param {'queued' | 'pending' | 'delivered'} state delivered: read on arrival (a lease notice this node rewrote)
+   * @param {Envelope} e @param {string} toHost @param {string} toName @param {'inbox' | 'held' | 'notice'} role
+   * @param {'queued' | 'pending' | 'delivered'} state
    */
   function store(e, toHost, toName, role, state) {
     if (q.insert.run(e.id, e.from, e.to, toHost, toName, e.body, e.sent_at, e.expires_at, e.sig, role, state, 0, now()).changes) return true
@@ -230,12 +222,14 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
     }
     if (local) {
       // a notice from leases@ another machine about a lease a session here holds or waits for: this
-      // node writes it, in its own words, as leases@ here. The envelope is kept, read, so one that's
-      // sent again (a lost answer) is answered as before and not written twice
-      const own = s.from.name === 'leases' && !isSelf(from) && !had ? leaseNotice(from, to.name, env.body) : null
-      if (!store(env, cfg.host, to.name, 'inbox', own ? 'delivered' : 'queued')) return null
-      if (own) ownMessage('leases', to.name, own)
+      // node writes it, in its own words, as leases@ here. The envelope is kept, read and out of sight
+      // (role 'notice'), so one that's sent again (a lost answer) is answered as before and not written
+      // twice. A copy already here for a session was dealt with when it came; one held here for a
+      // machine (a name we didn't know was ours) hasn't been
+      const own = s.from.name === 'leases' && !isSelf(from) && (!had || had.role === 'held') ? leaseNotice(from, to.name, env.body) : null
+      if (!store(env, cfg.host, to.name, own ? 'notice' : 'inbox', own ? 'delivered' : 'queued')) return null
       q.claim.run(cfg.host, to.name, now(), env.id)
+      if (own) { ownMessage('leases', to.name, own); q.noticed.run(now(), env.id) }
       const live = hub.awake(to.name)               // before pumping: a wait ends once it has woken the session
       if (toPump) toPump.add(to.name)
       else pump(to.name)
@@ -415,11 +409,33 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
   }
 
   /**
+   * Messages held here for `host`, which turned out to be this machine (see adoptSelfAlias): now for
+   * the sessions here they name. A lease notice among them from leases@ another machine is written by
+   * this node, as one that arrives for a session is (accept). @param {string} host
+   */
+  function takeIn(host) {
+    const names = new Set()
+    for (const row of /** @type {MessageRow[]} */ (/** @type {unknown} */ (q.toInbox.all(cfg.host, now(), host)))) {
+      names.add(row.to_name)
+      let from
+      try { from = parseAddr(row.from_addr, '') } catch { continue }
+      const own = from.name === 'leases' && !isSelf(from.host) ? leaseNotice(from.host, row.to_name, row.body) : null
+      if (own) { ownMessage('leases', row.to_name, own); q.noticed.run(now(), row.id) }
+    }
+    for (const n of names) pump(n)
+  }
+
+  /**
+   * A send from this machine: a session's, the CLI's, or the node's own (`asNode`: a lease notice from
+   * leases@ here). The names the node sends as are its alone: no session or local client may use one.
    * @param {{ from?: unknown, to?: unknown, body?: unknown, ttl_ms?: unknown, queued?: unknown }} d
    *   queued: for another machine, leave it to the forwarding loop (handed over with whatever else is
    *   due for that machine, in one request) rather than try a direct hand-off now: the node's own notices
+   * @param {boolean} [asNode]
    */
-  async function localSend(d) {
+  async function localSend(d, asNode = false) {
+    const fromName = sanitizeName(d.from || 'cli')
+    if (!asNode && NODE_NAMES.has(fromName)) throw httpErr(403, `${fromName} is a name this machine's node sends as: nothing else can send as ${fromName}@${cfg.host}`)
     if (typeof d.body !== 'string' || !d.body) throw httpErr(400, 'message body required')
     const body = /** @type {any} */ (d.body).toWellFormed().replaceAll('\0', '\uFFFD')     // what the store can give back unchanged
     if (Buffer.byteLength(body) > MAX_MSG) throw httpErr(413, `message too large (max ${MAX_MSG} bytes)`)
@@ -435,7 +451,7 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
     if (isSelf(to.host)) to.host = cfg.host
     // a name two machines claim, or an address the listed one answered at: say so, rather than pick one
     // (see contested in peers.js; notMember says which name and why)
-    if (to.host !== cfg.host && contested(member(to.host) ? to.host : peerRow(to.host)?.alias_of || '')) throw httpErr(409, notMember(to.host))
+    if (to.host !== cfg.host && contested(nameOf(to.host))) throw httpErr(409, notMember(to.host))
     // not a machine on this network (a typo, or a machine that hasn't joined): say so now rather
     // than queue it for days. Names configured as peers (a Tailscale name, an IP) are queued: the
     // machine may just be offline, and is found when it answers.
@@ -448,7 +464,7 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
     /** @type {Omit<Envelope, 'sig'>} */
     const unsigned = {
       id: crypto.randomUUID(),
-      from: `${sanitizeName(d.from || 'cli')}@${cfg.host}`,
+      from: `${fromName}@${cfg.host}`,
       to: `${to.name}@${to.host}`,
       body,
       sent_at: now(),
@@ -508,5 +524,5 @@ export function createMessages({ cfg, q, roster, me, now, log, tx, msgRow, isSel
   /** @param {string} to */
   const fullError = to => httpErr(429, `not sent: too many messages are waiting for ${to}, or this machine's message store is full. Try again once they've been read`)
 
-  return { envOf, checkEnv, removedHost, full, accept, kick, flush, routeFor, holderCandidates, replicate, localSend, fullError, inFlight }
+  return { envOf, removedHost, full, accept, takeIn, kick, flush, routeFor, holderCandidates, replicate, localSend, fullError, inFlight }
 }

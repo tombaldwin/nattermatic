@@ -1,6 +1,7 @@
 // The node's local sessions: each connected agent's event stream, the messages offered to it and not
 // yet acknowledged, and the wait behind `natter wake` that wakes an idle session when one arrives.
 // Messages themselves are in the store; this only decides what each session is shown, and when.
+import { NODE_NAMES } from './config.js'
 
 const PUMP_WINDOW = 256                // messages a session may hold unacknowledged: the rest wait here
 const PUMP_BUFFER = 1 << 20            // bytes waiting for a session to read before we stop writing
@@ -91,7 +92,8 @@ export function createSessions({ q, msgRow, tx, now, safe, host }) {
     const existing = map.get(want)
     const reconnecting = existing && token && existing.token === token ? existing : null
     if (reconnecting) { reconnecting.res.end(); reconnecting.waiter?.end(); map.delete(want) }
-    for (let i = 2; map.has(name); i++) name = `${want.slice(0, 47 - String(i).length)}-${i}`   // stays within the 48-char name limit
+    // a name in use, or one the node sends as itself, gets a number; stays within the 48-char name limit
+    for (let i = 2; map.has(name) || NODE_NAMES.has(name); i++) name = `${want.slice(0, 47 - String(i).length)}-${i}`
     /** @type {Session} */
     const s = {
       res, sent: new Set(), token, live, owner, cwd,

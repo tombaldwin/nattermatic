@@ -12,16 +12,22 @@
   from `leases@` that machine. Being a message, it waits while your machine is off (as long as any
   message, 7 days by default), copies are left with other machines, and it counts against the
   sender's allowance like any other. A machine on an older version shows the message as it is: the
-  same words, from `leases@` on the machine that keeps the lease.
+  same words, from `leases@` on the machine that keeps the lease. `leases` is the node's name alone:
+  a session can't be called it, and `natter send --from leases` (or any local send as it) is refused,
+  so a message from `leases@` a machine is its node's. On upgrading, notices still waiting for a
+  machine that was off are sent as messages, and leases held then are vouched for like new ones.
 - **One machine can't fill another's store with leases.** The agents of one machine may hold at
   most 1,000 leases on another between them, whatever names they use, and have at most 1,000 waits
   to hear that its resources are free; a claim past that is refused, and the agent is told why in
-  its own node's words. Asking again to hear about a resource is never refused, and an agent is told
+  its own node's words (the refusal carries a fixed code for that; a refusal for any other reason is
+  reported as just that, try later). Asking again to hear about a resource is never refused, and an agent is told
   it will hear only when its wait was recorded. Honest use is far below this (one agent's limit of 64
   stays). Leases and waits are counted on indexes, and the sweep that ends leases whose time is up
   reads only those.
 - **A lease on a machine whose name has become two machines'** (see below) can still be released,
-  which drops this machine's record of it; it isn't renewed any more, and runs out there.
+  under whichever of the machine's names, which drops this machine's record of it; it isn't renewed
+  any more, and runs out there. A release of a lease this machine has no record of says only why the
+  machine can't be asked.
 - **A member can't make a node check thousands of signatures at once.** Each machine takes at most
   500 new membership records from another in a burst, then 500 a minute; the rest are offered again
   at the next exchange. Real networks have some tens of records, so nothing changes for them (#9).
@@ -45,7 +51,10 @@
   listed machine sends under the name, which is never shown as that name's. The name is settled when
   one of the two is removed, or when the listed machine itself answers at the name (a Tailscale name
   passed on to a new machine clears within a couple of minutes); until then a machine keeps what it
-  knows of the name, however long both are quiet. A machine can't join through a node under a name
+  knows of the name, however long both are quiet. Your own machine answering at a listed machine's
+  name settles nothing: the name stays no one's rather than becoming yours, since another machine's
+  mail would then come to your sessions. Checking who answers at such a name runs beside the hello
+  round, not before it. A machine can't join through a node under a name
   that node knows another member, or the node itself, answers under; the invite says so and how to
   pick another.
 - **Messages pushed into a channel session are framed.** Like an inbox read, each runs between a

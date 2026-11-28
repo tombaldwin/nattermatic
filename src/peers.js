@@ -90,16 +90,18 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
   const contestedNames = () => allPeers().filter(r => r.alias_of && contested(r.host)).map(r => r.host)
   /**
    * Member `m` answered at contested name `host` (by its key). The listed machine answering there ends
-   * the contest: the alias was stale (a Tailscale name passed on to a new machine), and the name is its.
-   * Another member answering there is the one the name stands for now, and the contest goes on under
-   * that machine's name. The machine the alias already names, changes nothing.
+   * the contest: the alias was stale (a Tailscale name passed on to a new machine), and the name is its
+   * alone (no alias). Another member answering there is the one the name stands for now, and the
+   * contest goes on under that machine's name. The machine the alias already names, changes nothing;
+   * nor does this machine: the name is a listed member's, and can't become one of ours (its mail would
+   * come to sessions here), so the contest stays until a person removes one of the two.
    * @param {string} host @param {import('./types.js').Member} m
    */
   function settle(host, m) {
     const c = contested(host)
     if (!c || m.fp === c.answered.fp) return
-    if (m.fp === me.fp) { adoptSelfAlias(host); return }
-    q.setAlias.run(m.host, host)
+    if (m.fp === me.fp) { log(`${host} is answered by this machine, but is listed as another's: still two machines' name`); return }
+    q.setAlias.run(m.fp === c.named.fp ? null : m.host, host)
     log(m.fp === c.named.fp ? `${host} is answered by the machine listed under it: the name is its` : `${host} is answered by ${m.host} now`)
   }
   /**
@@ -195,8 +197,8 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     /** @type {any} */
     let data = {}
     try { data = r.text ? JSON.parse(r.text) : {} } catch { throw new Error(`${host}: bad reply`) }
-    // only the status: what another machine writes here would reach sessions and terminals as our own words
-    if (r.status < 200 || r.status >= 300) throw new PeerAnswered(host, r.status)
+    // only the status, and a code if it gave one: what another machine writes here would reach sessions and terminals as our own words
+    if (r.status < 200 || r.status >= 300) throw new PeerAnswered(host, r.status, data?.code)
     q.upsertPeer.run(host, null, now(), 0)
     if (data.records) mergeRoster(data.records, member(host)?.fp ?? host)
     return data
@@ -360,13 +362,16 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     try {
       // configured names that aren't member names (an IP, a Tailscale name): find out who they are
       for (const pe of cfg.peers) if (!member(pe.host) && !isSelf(pe.host) && !peerRow(pe.host)?.alias_of) await resolveName(pe.host)
-      // names two machines claim: does the listed one answer at the name by now?
-      for (const h of contestedNames()) await recheck(h)
-      const hosts = knownPeers()
-      let i = 0
-      await Promise.all(Array.from({ length: Math.min(HELLO_CONCURRENCY, hosts.length) }, async () => {
-        while (i < hosts.length) await hello(hosts[i++])
-      }))
+      const hosts = knownPeers(), names = contestedNames()
+      let i = 0, j = 0
+      await Promise.all([
+        ...Array.from({ length: Math.min(HELLO_CONCURRENCY, hosts.length) }, async () => {
+          while (i < hosts.length) await hello(hosts[i++])
+        }),
+        // names two machines claim: does the listed one answer at the name by now? Alongside the hellos,
+        // one at a time: a name nothing answers at waits out its timeout, and mustn't hold the hellos up
+        (async () => { while (j < names.length) await recheck(names[j++]) })(),
+      ])
     } catch (e) { log('hello error', errMsg(e)) }
   }
   /** A hello round begun after this is called: what every machine knows now. */
@@ -374,6 +379,6 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
 
   return {
     call, identify, resolveName, probe, notePeer, learnPeers, shareablePeers, greeted, hello, helloAll, freshRound,
-    knownPeers, notMember, contested, contestedNames, settle, reachedAt: (/** @type {string} */ h) => reachedAt.get(h),
+    knownPeers, nameOf, notMember, contested, contestedNames, settle, reachedAt: (/** @type {string} */ h) => reachedAt.get(h),
   }
 }

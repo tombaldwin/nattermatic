@@ -6,6 +6,9 @@ import { DatabaseSync } from 'node:sqlite'
  *   outbox - we are the sender's node; must hand to the recipient's node
  *   held   - we are holding a copy for an offline machine; must hand to the recipient's node
  *   inbox  - recipient is on this machine; must push to the local session
+ *   notice - a lease notice from another machine's leases@ that this node wrote for a session here in
+ *            its own words (see leases.js inbound): kept, read, only so a copy sent again isn't written
+ *            twice. Never shown, not even as history
  */
 
 /**
@@ -28,6 +31,9 @@ export const MOVES = {
   'pushed': ['inbox:queued'],
   // read by its session. Even if it expired, or was shown, meanwhile: the session has it
   'delivered': ['inbox:queued', 'inbox:pushed', 'inbox:expired', 'inbox:delivered'],
+  // a lease notice from another machine, held here for a name that turned out to be ours, that this
+  // node has now written for its session in its own words: kept, read, out of sight
+  'notice:delivered': ['inbox:queued'],
 }
 
 /**
@@ -97,11 +103,13 @@ export function queries(db) {
     retry: db.prepare(`UPDATE messages SET attempts=attempts+1, next_attempt=?, last_error=?, updated_at=? WHERE id=? AND state='pending'`),
     replicated: db.prepare(`UPDATE messages SET replicated=1 WHERE id=?`),
     wake: db.prepare(`UPDATE messages SET next_attempt=0 WHERE state='pending' AND to_host=?`),
-    toInbox: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, updated_at=? WHERE to_host=? AND ${from('inbox:queued')} RETURNING to_name`),
+    toInbox: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, updated_at=? WHERE to_host=? AND ${from('inbox:queued')} RETURNING *`),
     inboxQueued: db.prepare(`SELECT id FROM messages WHERE role='inbox' AND to_name=? AND state='queued' AND expires_at>? ORDER BY sent_at LIMIT ?`),
     // the machine's own copy of something it was holding as a copy for a name it didn't know was its own
     claim: db.prepare(`UPDATE messages SET role='inbox', state='queued', to_host=?, to_name=?, updated_at=? WHERE id=? AND ${from('inbox:queued', ['held:pending'])}`),
     delivered: db.prepare(`UPDATE messages SET state='delivered', updated_at=? WHERE id=? AND ${from('delivered')}`),
+    // a lease notice from another machine's leases@, written for its session by this node (see messages.js accept)
+    noticed: db.prepare(`UPDATE messages SET role='notice', state='delivered', updated_at=? WHERE id=? AND ${from('notice:delivered')}`),
     // pushed into a channel session: Claude Code gives no receipt, so this means "shown", not "read"
     pushed: db.prepare(`UPDATE messages SET state='pushed', updated_at=? WHERE id=? AND ${from('pushed')}`),
     // newest to arrive: sent_at is whatever the sender says

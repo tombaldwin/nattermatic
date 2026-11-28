@@ -76,11 +76,13 @@ test('a name in use: the same session reconnecting keeps it, anyone else gets an
   let closed = 0
   hub.connect(/** @type {any} */ (a), { want: 'api', token: 't', live: true, owner: 1, cwd: '' }, () => closed++)
   assert.equal(hub.connect(/** @type {any} */ (fakeRes()), { want: 'api', token: 'other', live: true, owner: 2, cwd: '' }, () => {}).name, 'api-2')
+  // leases@ is the node's own: a session asking for the name gets another, as if it were in use
+  assert.equal(hub.connect(/** @type {any} */ (fakeRes()), { want: 'leases', token: 'l', live: true, owner: 3, cwd: '' }, () => {}).name, 'leases-2')
   const again = hub.connect(/** @type {any} */ (fakeRes()), { want: 'api', token: 't', live: true, owner: 1, cwd: '' }, () => {})
   assert.deepEqual(again, { name: 'api', reconnected: true })
   assert.ok(a.ended, 'its stale stream is closed')
   assert.equal(closed, 1)
-  assert.equal(hub.map.size, 2)
+  assert.equal(hub.map.size, 3)
   assert.equal(hub.wait(/** @type {any} */ (fakeRes()), [99], null), false, 'no session for these processes')
   hub.closeAll()
 })

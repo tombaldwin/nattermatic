@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { openStore, queries, MOVES } from '../../src/store.js'
 
-const ROLES = ['outbox', 'held', 'inbox']
+const ROLES = ['outbox', 'held', 'inbox', 'notice']
 const STATES = ['pending', 'forwarded', 'queued', 'pushed', 'delivered', 'expired', 'failed']
 
 test('each statement makes only the moves in the table', () => {
@@ -22,6 +22,7 @@ test('each statement makes only the moves in the table', () => {
     claim: { run: (/** @type {string} */ id) => q.claim.run('me', 'api', T, id), to: 'inbox:queued', only: ['held:pending'] },
     pushed: { run: (/** @type {string} */ id) => q.pushed.run(T, id), to: 'pushed' },
     delivered: { run: (/** @type {string} */ id) => q.delivered.run(T, id), to: 'delivered' },
+    noticed: { run: (/** @type {string} */ id) => q.noticed.run(T, id), to: 'notice:delivered' },
   }
   for (const [name, { run, to, only }] of Object.entries(runs)) {
     const allowed = /** @type {string[]} */ (only ?? MOVES[/** @type {keyof typeof MOVES} */ (to)])

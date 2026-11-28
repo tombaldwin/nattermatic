@@ -27,7 +27,11 @@ function node({ q: statements = {}, msgRow = () => undefined } = {}) {
   const noop = { run: () => ({ changes: 0 }), get: () => undefined, all: () => [] }
   // the peers table is `rows`: an alias set by the code under test lands there
   statements.setAlias ??= { run: (/** @type {string} */ alias, /** @type {string} */ host) => { const r = rows.get(host); if (r) r.alias_of = alias; return { changes: r ? 1 : 0 } } }
+  statements.insert ??= { run: () => ({ changes: 1 }) }                  // a store that takes everything
   const q = new Proxy({}, { get: (_, k) => statements[String(k)] ?? noop })
+  /** @type {string[]} names the code under test took for this machine's own */
+  const adopted = []
+  const adoptSelfAlias = (/** @type {string} */ name) => { adopted.push(name); return false }
   let clock = 1_700_000_000_000
   const now = () => clock
   /** @type {string[]} */
@@ -38,20 +42,26 @@ function node({ q: statements = {}, msgRow = () => undefined } = {}) {
   const peerRow = (/** @type {string} */ h) => rows.get(h)
   const peers = createPeers(/** @type {any} */ ({
     cfg, me: A, roster, q, peerRow, allPeers: () => [...rows.values()], now, log, isSelf, member,
-    removedHost: () => false, adoptSelfAlias: () => false, mergeRoster: () => false, kick: () => {},
+    removedHost: () => false, adoptSelfAlias, mergeRoster: () => false, kick: () => {},
   }))
   const messages = createMessages(/** @type {any} */ ({
     cfg, q, roster, me: A, now, log, tx: (/** @type {() => void} */ f) => f(), msgRow, isSelf, member, peerRow, allPeers: () => [...rows.values()],
-    selfAliases: new Set(), adoptSelfAlias: () => false, hub: { pump() {}, awake: () => false, status: () => '' },
+    selfAliases: new Set(), adoptSelfAlias, hub: { pump() {}, awake: () => false, status: () => '' },
     call: async () => { throw new Error('no network here') }, hello: async () => {}, resolveName: async () => null,
-    notMember: peers.notMember, contested: peers.contested, knownPeers: peers.knownPeers,
+    notMember: peers.notMember, nameOf: peers.nameOf, contested: peers.contested, knownPeers: peers.knownPeers,
   }))
+  /**
+   * What the signature check said of an envelope member `by` delivered, read off what accept did with
+   * it: stored, refused for good, or not taken for now (the answer for a full store, which these
+   * nodes never have unless a test makes it so). @param {any} e @param {string} [by]
+   */
+  const check = (e, by) => { const st = messages.accept(e, undefined, undefined, by); return st === 'queued' || st === 'live' ? 'ok' : st === 'full' ? 'over' : st === null ? 'bad' : st }
   /** @param {{ host: string, key: string }} from @param {Record<string, unknown>} [extra] @param {string} [signer] */
   const envelope = (from, extra = {}, signer = from.key) => {
     const e = { id: crypto.randomUUID(), from: `x@${from.host}`, to: 'bob@a.test', body: 'hi', sent_at: now(), expires_at: now() + 60_000, ...extra }
     return { ...e, sig: signEnvelope(signer, e) }
   }
-  return { A, B: { ...B, host: 'b.test' }, C: { ...C, host: 'c.test' }, roster, rows, peers, messages, logs, envelope, tick: (/** @type {number} */ ms) => { clock += ms }, cfg, member, now }
+  return { A, B: { ...B, host: 'b.test' }, C: { ...C, host: 'c.test' }, roster, rows, peers, messages, check, statements, adopted, logs, envelope, tick: (/** @type {number} */ ms) => { clock += ms }, cfg, member, now }
 }
 
 test('a member name another member has answered under is no one\'s: nothing is routed to either until one is removed', async () => {
@@ -101,12 +111,11 @@ test('a member name another member has answered under is no one\'s: nothing is r
 
 test('a member\'s delivered envelopes are checked up to an allowance; the rest are answered "try later", never dropped', () => {
   const n = node()
-  const { checkEnv, accept } = n.messages
+  const { check: checkEnv } = n, { accept } = n.messages
   const from = n.B.fp                                          // the delivering member, by its key
   for (let i = 0; i < CHECK_BUDGET; i++) assert.equal(checkEnv(n.envelope(n.B), from), 'ok')
-  const next = n.envelope(n.B)
-  assert.equal(checkEnv(next, from), 'over', 'the allowance is spent')
-  assert.equal(accept(next, undefined, undefined, from), 'full', 'the sender hears what it hears for a full store: try again later')
+  const next = n.envelope(n.B, { expires_at: n.now() + 600_000 })     // (still good after the minute below)
+  assert.equal(accept(next, undefined, undefined, from), 'full', 'the allowance is spent: the sender hears what it hears for a full store, try again later')
   assert.equal(n.logs.filter(l => /b\.test delivered more messages than this machine checks at once/.test(l)).length, 1, 'said once')
   checkEnv(n.envelope(n.B), from)
   assert.equal(n.logs.filter(l => /checks at once/.test(l)).length, 1, 'not again within the minute')
@@ -123,7 +132,7 @@ test('a member\'s delivered envelopes are checked up to an allowance; the rest a
 
 test('an envelope that failed its check is remembered, so sending it again costs nothing, and only that one is refused', () => {
   const n = node()
-  const { checkEnv } = n.messages
+  const { check: checkEnv } = n
   const by = 'deliverer'
   const real = n.envelope(n.B)
   const forged = n.envelope(n.B, {}, n.C.key)                   // claims b.test, signed by c.test
@@ -138,7 +147,7 @@ test('an envelope that failed its check is remembered, so sending it again costs
   assert.equal(checkEnv(n.envelope(n.B), by), 'over')
   // a machine back under a new key, before we heard of it: what failed against the old key passes against the new
   const B2 = newIdentity()
-  const early = n.envelope({ host: 'b.test', key: B2.key })
+  const early = n.envelope({ host: 'b.test', key: B2.key }, { expires_at: n.now() + 600_000 })
   n.tick(60_000)
   assert.equal(checkEnv(early, by), 'bad')
   n.roster.remove(n.A, n.B.fp)
@@ -151,7 +160,7 @@ test('what can\'t be stored is refused before its signature is checked, so retry
   const stored = new Map()
   // every session here is full
   const n = node({ q: { waiting: { get: () => ({ n: 2000 }) } }, msgRow: id => stored.get(id) })
-  const { accept, checkEnv } = n.messages
+  const { accept } = n.messages
   const by = n.B.fp
   for (let i = 0; i < CHECK_BUDGET + 5; i++) assert.equal(accept(n.envelope(n.B), undefined, undefined, by), 'full')
   const old = { sent_at: n.now() - 120_000, expires_at: n.now() - 1 }
@@ -162,13 +171,14 @@ test('what can\'t be stored is refused before its signature is checked, so retry
   for (let i = 0; i < CHECK_BUDGET + 5; i++) assert.equal(accept(e, undefined, undefined, by), 'queued')
   // ... and another message under an id already here is refused, whoever signed it
   assert.equal(accept({ ...n.envelope(n.B, { body: 'another' }), id: e.id }, undefined, undefined, by), null)
-  assert.equal(checkEnv(n.envelope(n.B), by), 'ok', 'none of that counted against the allowance')
+  n.statements.waiting = { get: () => ({ n: 0 }) }                      // room again
+  assert.equal(n.check(n.envelope(n.B), by), 'ok', 'none of that counted against the allowance')
   assert.equal(n.logs.filter(l => /checks at once/.test(l)).length, 0)
 })
 
 test('a check is charged to the machine whose signature it is, and a failed one to the machine that delivered it', () => {
   const n = node()
-  const { checkEnv } = n.messages
+  const { check: checkEnv } = n
   // c.test hands on b.test's mail (copies it held for us): that is b.test's allowance, not c.test's
   for (let i = 0; i < CHECK_BUDGET; i++) assert.equal(checkEnv(n.envelope(n.B), n.C.fp), 'ok')
   assert.equal(checkEnv(n.envelope(n.B), n.C.fp), 'over', "b.test's allowance is spent")
@@ -204,17 +214,23 @@ test('a contest ends when the listed machine answers at the name, and until then
   n.peers.settle('desk.ts.net', /** @type {any} */ (n.member('c.test')))
   assert.equal(n.peers.contested('desk.ts.net')?.answered.host, 'c.test')
   assert.match(n.peers.notMember('desk.ts.net'), /c\.test has answered under it/)
-  // the listed machine answering there (by its key): the alias was stale, and the name is its
+  // this machine answering there changes nothing either: the name is a listed member's, and can't become
+  // one of ours (its mail would come to sessions here)
+  n.peers.settle('desk.ts.net', /** @type {any} */ (n.roster.members.get(n.A.fp)))
+  assert.ok(n.peers.contested('desk.ts.net'))
+  assert.deepEqual(n.adopted, [], 'not taken as a name of this machine')
+  assert.match(n.logs.join('\n'), /desk\.ts\.net is answered by this machine, but is listed as another's/)
+  // the listed machine answering there (by its key): the alias was stale, and the name is its alone
   n.peers.settle('desk.ts.net', /** @type {any} */ (n.member('desk.ts.net')))
   assert.equal(n.peers.contested('desk.ts.net'), null)
   assert.deepEqual(n.peers.contestedNames(), [])
   assert.equal(await n.messages.routeFor('desk.ts.net'), 'desk.ts.net')
-  assert.equal(n.rows.get('desk.ts.net')?.alias_of, 'desk.ts.net')
+  assert.equal(n.rows.get('desk.ts.net')?.alias_of, null, 'no alias: not of itself either')
   assert.match(n.logs.join('\n'), /desk\.ts\.net is answered by the machine listed under it/)
 })
 
 test('an address the listed machine answered at is refused like the name, and what it sends under the name waits', async () => {
-  const n = node({ q: { insert: { run: () => ({ changes: 1 }) } } })     // a store that takes everything
+  const n = node()
   const D = contest(n)
   const { routeFor, localSend, accept } = n.messages
   // the listed machine has answered at an address (by key): that address stands for the contested name
@@ -252,7 +268,7 @@ test('mail queued under a name while two machines claim it waits, then goes to t
     cfg: n.cfg, q, roster: n.roster, me: n.A, now: n.now, log: () => {}, tx: (/** @type {() => void} */ f) => f(), msgRow: (/** @type {string} */ id) => q.get.get(id), isSelf, member: n.member, peerRow, allPeers: rows,
     selfAliases: new Set(), adoptSelfAlias: () => false, hub: { pump() {}, awake: () => false, status: () => '' },
     call: async (/** @type {string} */ host, /** @type {string} */ _m, /** @type {string} */ _p, /** @type {any} */ body) => { calls.push({ host, body }); return { results: Object.fromEntries(body.messages.map((/** @type {any} */ e) => [e.id, 'queued'])) } },
-    hello: async () => {}, resolveName: async () => null, notMember: peers.notMember, contested: peers.contested, knownPeers: peers.knownPeers,
+    hello: async () => {}, resolveName: async () => null, notMember: peers.notMember, nameOf: peers.nameOf, contested: peers.contested, knownPeers: peers.knownPeers,
   }))
   const settled = () => new Promise(r => setTimeout(r, 20))
   // desk.ts.net is a nickname only this machine uses for b.test; then c.test lists a machine as desk.ts.net

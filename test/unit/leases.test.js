@@ -235,6 +235,30 @@ test('a lease on a machine that can no longer be asked (its name is two machines
   assert.deepEqual(asked.slice(2), ['renew cache@c.test'], 'and not asked again')
 })
 
+test('upgrading from a version with its own queue of notices: they are sent as messages, and leases held then are vouched for', () => {
+  const { db, L, told, now } = setup()
+  const ended = { kind: 'ended', resource: 'db', why: 'expired', holder: 'web@b.test', claimed_at: 5 }
+  // as the older version left the store: notices waiting for a machine that was off, and leases held here
+  db.exec(`CREATE TABLE lease_notices(id INTEGER PRIMARY KEY, host TEXT NOT NULL, name TEXT NOT NULL, notice TEXT NOT NULL, added_at INTEGER NOT NULL, next_attempt INTEGER NOT NULL)`)
+  db.prepare(`INSERT INTO lease_notices(host,name,notice,added_at,next_attempt) VALUES (?,?,?,?,0)`).run('b.test', 'web', JSON.stringify(ended), 1)
+  db.prepare(`INSERT INTO lease_notices(host,name,notice,added_at,next_attempt) VALUES (?,?,?,?,0)`).run('c.test', 'api', JSON.stringify({ ...ended, kind: 'free' }), 2)
+  db.prepare(`INSERT INTO lease_notices(host,name,notice,added_at,next_attempt) VALUES (?,?,?,?,0)`).run('c.test', 'api', 'not a notice', 3)
+  db.prepare(`INSERT INTO held(authority,resource,name,sid,kind,ttl_ms,renewed_at) VALUES (?,?,?,?,?,?,?)`).run('b.test', 'db', 'web', 'sid-web-0123456789', 'session', MIN, 1)
+  db.prepare(`INSERT INTO held(authority,resource,name,sid,kind,ttl_ms,renewed_at) VALUES (?,?,?,?,?,?,?)`).run('a.test', 'local', 'web', 'sid-web-0123456789', 'session', MIN, 1)
+  L.migrate()
+  assert.deepEqual(told.map(m => m.to), ['web@b.test', 'api@c.test'], 'each notice that reads as one, as a message to its machine')
+  assert.equal(told[0].body, noticeBody(/** @type {any} */ (ended), 'a.test'))
+  assert.equal(db.prepare(`SELECT 1 FROM sqlite_master WHERE name='lease_notices'`).get(), undefined, 'the old queue is gone')
+  // a notice from b.test about db, which web held there before the upgrade, is this node's to write
+  assert.ok(L.inbound('b.test', 'web', noticeBody(/** @type {any} */ (ended), 'b.test')))
+  assert.deepEqual(db.prepare(`SELECT authority, resource, name FROM lease_interest ORDER BY authority`).all().map(r => ({ ...r })), [{ authority: 'b.test', resource: 'db', name: 'web' }], 'a lease here needs no vouching for')
+  assert.equal(/** @type {any} */ (db.prepare(`SELECT until FROM lease_interest`).get()).until, now() + INTEREST_MS)
+  // again, and on a store with nothing to migrate: nothing happens
+  L.migrate()
+  assert.equal(told.length, 2)
+  setup().L.migrate()
+})
+
 test('a notice another machine sent is rebuilt from checked parts: its codes and names, never its words', () => {
   const ok = { kind: 'ended', resource: 'db', why: 'broken', by: 'cli@c.test', holder: 'web@a.test', claimed_at: 1_000_000 }
   assert.deepEqual(cleanNotice(ok, 'b.test'), ok)

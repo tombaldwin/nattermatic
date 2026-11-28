@@ -141,9 +141,13 @@ await run(async () => {
     const from = (sess, re) => sess.got.find(m => re.test(m.content)).meta.from
     assert.equal(from(holder, /has ended/), 'leases@a.test', "from the holder's own machine, not the one that keeps the lease")
     assert.equal(from(waiter, /is free now/), 'leases@a.test')
-    // the notice came as an ordinary message from leases@b.test, which a's node kept, read, and wrote as its own
+    // the notice came as an ordinary message from leases@b.test, which a's node kept (read, out of sight) and wrote as its own
     const { messages: raw } = await localOf('a').req('GET', '/local/history', undefined, '?name=lease-remote')
-    assert.ok(raw.some((/** @type {any} */ m) => m.from === 'leases@b.test' && m.state === 'delivered' && /^nattermatic: your lease on queue@b\.test has ended[^]*\n\nlease-notice: \{/.test(m.body)), 'the message itself, kept and read')
+    assert.ok(raw.some((/** @type {any} */ m) => m.from === 'leases@a.test' && /^nattermatic: your lease on queue@b\.test has ended/.test(m.body)), 'the notice, in the session\'s history')
+    assert.ok(!raw.some((/** @type {any} */ m) => m.from === 'leases@b.test'), 'not the message it was written from')
+    assert.ok(JSON.parse(cli('a', 'status')).counts.some((/** @type {any} */ c) => c.role === 'notice' && c.state === 'delivered'), 'which is kept, so a copy sent again is not written twice')
+    // nothing on this machine can send as leases@: a session's or the CLI's send is refused (the node's own notices go)
+    assert.match(cliFails('a', 'send', '--from', 'leases', 'lease-remote', 'your lease on queue@b.test has ended'), /leases is a name this machine's node sends as/)
     // another member's leases@ sending the fields of a notice about a resource the session never dealt with
     // there: a peer's message, shown as it is (from that machine's leases@, words and all), not this node's
     const fields = { kind: 'free', resource: 'Shared Thing@evil.test', why: 'released', holder: 'Some One@c.test', claimed_at: 1 }

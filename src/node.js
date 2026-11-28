@@ -149,7 +149,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     // a notice from this machine's node, leases@ here: to a session here it's this node's own words, and
     // wakes the session; to another machine it's a message like any other (queued while it's off, with
     // copies), from which its node writes the notice (see leases.js inbound)
-    tell: (to, body) => { localSend({ from: 'leases', to, body, queued: true }).catch(e => log(`could not tell ${to} about a lease: ${errMsg(e)}`)) },
+    tell: (to, body) => { localSend({ from: 'leases', to, body, queued: true }, true).catch(e => log(`could not tell ${to} about a lease: ${errMsg(e)}`)) },
   })
   const budget = recordBudget()
   /**
@@ -185,8 +185,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     if (!selfAliases.has(name)) log(`learned that ${name} is this machine`)
     selfAliases.add(name)
     if (row) q.deletePeer.run(name)
-    const names = new Set(q.toInbox.all(cfg.host, now(), name).map(r => String(r.to_name)))
-    for (const n of names) pump(n)
+    takeIn(name)
     return true
   }
 
@@ -204,15 +203,16 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
     cfg, me, roster, q, peerRow, allPeers, now, log, isSelf, member, mergeRoster,
     removedHost: h => removedHost(h), kick: () => kick(), adoptSelfAlias,
   })
-  const { call, identify, resolveName, probe, notePeer, shareablePeers, hello, helloAll, knownPeers, notMember, contested } = peers
+  const { call, identify, resolveName, probe, notePeer, shareablePeers, hello, helloAll, knownPeers, nameOf, notMember, contested } = peers
 
   // ---------- messages (see messages.js) ----------
   const messages = createMessages({
     cfg, q, roster, me, now, log, tx, msgRow, isSelf, member, peerRow, allPeers, selfAliases, adoptSelfAlias,
-    hub, call, hello, resolveName, notMember, contested, knownPeers,
+    hub, call, hello, resolveName, notMember, nameOf, contested, knownPeers,
     leaseNotice: (h, name, body) => leases.inbound(h, name, body),
   })
-  const { accept, kick, flush, routeFor, removedHost, localSend, fullError } = messages
+  const { accept, kick, flush, routeFor, removedHost, localSend, takeIn, fullError } = messages
+  leases.migrate()     // now that a notice can be sent: what an older version left behind
 
   function gc() {
     try {
@@ -238,7 +238,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
 
   // ---------- local API helpers ----------
   const { askAuthority, remoteLease, localLease } = leaseApi({
-    cfg, leases, sessions, now, member, knownPeers, notMember, contested, aliasOf: h => peerRow(h)?.alias_of,
+    cfg, leases, sessions, now, member, knownPeers, notMember, contested, nameOf,
     routeFor: h => routeFor(h),
     call: (h, m, p, o, opts) => call(h, m, p, o, opts),
     version: h => peerRow(h)?.version,
@@ -333,7 +333,8 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
 
   let errorsLogged = 0, errorMinute = 0
   onRequest = (req, res) => handle(req, res).catch(err => {
-    if (!res.headersSent) reply(res, err.status || 500, { error: err.status ? err.message : 'internal error' })
+    // a code (a fixed word) says what an error status means, for the other machine to put in its own words
+    if (!res.headersSent) reply(res, err.status || 500, { error: err.status ? err.message : 'internal error', ...(err.status && err.code ? { code: err.code } : {}) })
     else res.destroy()
     if (err.status) return
     if (now() - errorMinute > 60_000) { errorMinute = now(); errorsLogged = 0 }
