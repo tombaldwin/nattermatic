@@ -152,6 +152,12 @@ test('record budget: a burst per sender, then a share per minute (#9)', () => {
   assert.equal(b.take('x', 20), 5, 'it refills over time')
   t = 100_000
   assert.equal(b.take('x', 20), 10, 'never past the burst')
+  assert.equal(b.has('x'), false, 'nothing left')
+  assert.equal(b.has('z'), true, 'untouched: whole')
+  t = 100_100
+  assert.equal(b.has('x'), true, 'one back')
+  assert.equal(b.take('x', 1), 1)
+  assert.equal(b.has('x'), false)
 })
 
 test('roster: only earlier machines can remove, and a removed machine cannot fight back', () => {

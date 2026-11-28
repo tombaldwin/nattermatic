@@ -81,14 +81,47 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     const answered = named && member(peerRow(host)?.alias_of || '')
     return named && answered && answered.fp !== named.fp ? { named, answered } : null
   }
+  /** The member name `host` is, or stands for: an address or nickname a member answered at (by key) stands for that member. @param {string} host */
+  const nameOf = host => member(host) ? host : peerRow(host)?.alias_of || host
+  /**
+   * The names two machines claim now, whose rows carry the contest: gc keeps them, so a contest
+   * outlasts a quiet month, and ends only as below or when one of the two is removed.
+   */
+  const contestedNames = () => allPeers().filter(r => r.alias_of && contested(r.host)).map(r => r.host)
+  /**
+   * Member `m` answered at contested name `host` (by its key). The listed machine answering there ends
+   * the contest: the alias was stale (a Tailscale name passed on to a new machine), and the name is its.
+   * Another member answering there is the one the name stands for now, and the contest goes on under
+   * that machine's name. The machine the alias already names, changes nothing.
+   * @param {string} host @param {import('./types.js').Member} m
+   */
+  function settle(host, m) {
+    const c = contested(host)
+    if (!c || m.fp === c.answered.fp) return
+    if (m.fp === me.fp) { adoptSelfAlias(host); return }
+    q.setAlias.run(m.host, host)
+    log(m.fp === c.named.fp ? `${host} is answered by the machine listed under it: the name is its` : `${host} is answered by ${m.host} now`)
+  }
+  /**
+   * Who answers at contested name `host` now? Asked by the name itself (or a configured route), never
+   * the row's address: the listed machine's requests put its address there, and it mustn't settle the
+   * contest by answering at its own address.
+   * @param {string} host
+   */
+  async function recheck(host) {
+    let m
+    try { m = await identify(cfg.routes[host] || `${host}:${cfg.port}`) } catch { return }
+    settle(host, m)
+  }
 
   /** Why `host` can't be sent to. @param {string} host */
   const notMember = host => {
-    const c = contested(host)
+    const name = nameOf(host)
+    const c = contested(name)
     if (c) {
       const adder = roster.members.get(c.named.by)?.host ?? roster.ranked.get(c.named.by)?.host ?? 'a machine since removed'
       // `natter remove <name>` takes the one on the list: the other keeps its own name
-      return `${host} is two machines' name: ${c.answered.host} has answered under it, and a machine added by ${adder} is listed as ${host}. Nothing is sent to it until one of them is removed (natter remove ${host} removes the listed one, natter remove ${c.answered.host} the other)`
+      return `${host === name ? '' : `${host} is answered by the machine listed as ${name}, and `}${name} is two machines' name: ${c.answered.host} has answered under it, and a machine added by ${adder} is listed as ${name}. Nothing is sent to it until one of them is removed (natter remove ${name} removes the listed one, natter remove ${c.answered.host} the other)`
     }
     return removedHost(host) ? `${host} was removed from the network` : `${host} is not a known machine on this network (yet)`
   }
@@ -327,6 +360,8 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
     try {
       // configured names that aren't member names (an IP, a Tailscale name): find out who they are
       for (const pe of cfg.peers) if (!member(pe.host) && !isSelf(pe.host) && !peerRow(pe.host)?.alias_of) await resolveName(pe.host)
+      // names two machines claim: does the listed one answer at the name by now?
+      for (const h of contestedNames()) await recheck(h)
       const hosts = knownPeers()
       let i = 0
       await Promise.all(Array.from({ length: Math.min(HELLO_CONCURRENCY, hosts.length) }, async () => {
@@ -339,6 +374,6 @@ export function createPeers({ cfg, me, roster, q, peerRow, allPeers, now, log, i
 
   return {
     call, identify, resolveName, probe, notePeer, learnPeers, shareablePeers, greeted, hello, helloAll, freshRound,
-    knownPeers, notMember, contested, reachedAt: (/** @type {string} */ h) => reachedAt.get(h),
+    knownPeers, notMember, contested, contestedNames, settle, reachedAt: (/** @type {string} */ h) => reachedAt.get(h),
   }
 }
