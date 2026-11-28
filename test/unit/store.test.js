@@ -53,3 +53,26 @@ test('a message handed over elsewhere meanwhile is not then marked failed', () =
   assert.equal(/** @type {any} */ (db.prepare('SELECT state FROM messages').get()).state, 'forwarded')
   db.close()
 })
+
+test('what is due for a machine: this machine\'s own mail first, then copies held for others as they arrived, not as their senders dated them', () => {
+  const db = openStore(':memory:')
+  const q = queries(db)
+  const T = 1_000_000
+  // copies held for h from two senders; the second to arrive dates its mail at the dawn of time
+  q.insert.run('held-c', 'x@c', 'b@h', 'h', 'b', 'text', T - 5, T + 9e9, 'sig', 'held', 'pending', 0, T)
+  q.insert.run('held-m', 'x@m', 'b@h', 'h', 'b', 'junk', 0, T + 9e9, 'sig', 'held', 'pending', 0, T)
+  q.insert.run('own', 'me@a', 'b@h', 'h', 'b', 'text', T, T + 9e9, 'sig', 'outbox', 'pending', 0, T)
+  assert.deepEqual(q.dueFor.all(T, T, 'h').map(r => r.id), ['own', 'held-c', 'held-m'])
+  db.close()
+})
+
+test('a quiet peer is forgotten after a while, unless its name is one two machines claim', () => {
+  const db = openStore(':memory:')
+  const q = queries(db)
+  q.upsertPeer.run('old.ts.net', null, 1, 0)
+  q.upsertPeer.run('desk.ts.net', null, 1, 0)
+  q.upsertPeer.run('fresh.ts.net', null, 100, 0)
+  q.forgetPeers.run(50, JSON.stringify(['desk.ts.net']))
+  assert.deepEqual(q.peers.all().map(r => r.host), ['desk.ts.net', 'fresh.ts.net'])
+  db.close()
+})

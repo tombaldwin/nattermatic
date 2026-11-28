@@ -48,24 +48,32 @@ export const DK_GRACE_MS = 14 * 86400_000
 export const RECORD_BUDGET = 500
 
 /**
- * An allowance per sender that refills over time: take(key, n) says how many of n it may have now.
+ * An allowance per sender that refills over time: take(key, n) says how many of n it may have now,
+ * and has(key) whether it has one left to take.
  * @param {{ cap?: number, perMs?: number, now?: () => number }} [opts]
  */
 export function recordBudget({ cap = RECORD_BUDGET, perMs = 60_000, now = Date.now } = {}) {
   /** @type {Map<string, { left: number, at: number }>} */
   const left = new Map()
+  /** The allowance of `key`, refilled to now. @param {string} key */
+  const of = key => {
+    const t = now()
+    const b = left.get(key) ?? { left: cap, at: t }
+    b.left = Math.min(cap, b.left + (t - b.at) * cap / perMs)
+    b.at = t
+    left.set(key, b)
+    return b
+  }
   return {
     /** @param {string} key @param {number} n */
     take(key, n) {
-      const t = now()
-      const b = left.get(key) ?? { left: cap, at: t }
-      b.left = Math.min(cap, b.left + (t - b.at) * cap / perMs)
-      b.at = t
+      const b = of(key)
       const got = Math.max(0, Math.min(n, Math.floor(b.left)))
       b.left -= got
-      left.set(key, b)
       return got
     },
+    /** @param {string} key */
+    has(key) { return of(key).left >= 1 },
   }
 }
 

@@ -83,10 +83,12 @@ export function queries(db) {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`),
     get: db.prepare(`SELECT * FROM messages WHERE id=?`),
     // the names with something due, those tried least first, so a backlog for a machine that's off
-    // can't keep the others waiting; what's due for one name, the oldest first; and the names nothing
-    // has identified, the same way, so a crowd of made-up names can't keep a real one waiting
+    // can't keep the others waiting; what's due for one name: this machine's own mail first, then the
+    // copies it holds for others as they arrived here (not as their senders dated them: a member can't
+    // put its mail ahead of the rest by dating it early); and the names nothing has identified, the
+    // same way as the first, so a crowd of made-up names can't keep a real one waiting
     due: db.prepare(`SELECT to_host FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host IN (SELECT value FROM json_each(?)) GROUP BY to_host ORDER BY MIN(attempts)`),
-    dueFor: db.prepare(`SELECT id,to_host,role,attempts,replicated FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host=? ORDER BY sent_at LIMIT 2000`),
+    dueFor: db.prepare(`SELECT id,to_host,role,attempts,replicated FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host=? ORDER BY role='held', rowid LIMIT 2000`),
     dueNames: db.prepare(`SELECT to_host FROM messages WHERE state='pending' AND next_attempt<=? AND expires_at>? AND to_host NOT IN (SELECT value FROM json_each(?)) GROUP BY to_host ORDER BY MIN(attempts) LIMIT ?`),
     // handed over: the text has no more use here, and shouldn't sit on a holder until the message expires
     forwarded: db.prepare(`UPDATE messages SET state='forwarded', body='', updated_at=? WHERE id=? AND ${from('forwarded')}`),
@@ -120,7 +122,8 @@ export function queries(db) {
       ON CONFLICT(host) DO UPDATE SET version=excluded.version`),
     deletePeer: db.prepare(`DELETE FROM peers WHERE host=?`),
     clearAddr: db.prepare(`UPDATE peers SET addr=NULL WHERE host=?`),
-    forgetPeers: db.prepare(`DELETE FROM peers WHERE configured=0 AND last_seen < ?`),
+    // ...except the names (a JSON list) two machines claim: that row carries the contest (see contested in peers.js)
+    forgetPeers: db.prepare(`DELETE FROM peers WHERE configured=0 AND last_seen < ? AND host NOT IN (SELECT value FROM json_each(?))`),
     addInvite: db.prepare(`INSERT INTO invites(hash, created_at, expires_at) VALUES(?,?,?)`),
     invite: db.prepare(`SELECT * FROM invites WHERE hash=?`),
     useInvite: db.prepare(`UPDATE invites SET used_at=? WHERE hash=? AND used_at IS NULL`),

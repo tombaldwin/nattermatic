@@ -53,17 +53,30 @@ the same membership from the same records.
   if the signer is a current member and is the machine named in the sender address, so holders
   relaying copies can't alter messages and a member can't send as another machine. A sender address
   must be exactly `name@host` as a node writes it, so nothing can be hidden in it. Messages are
-  encrypted between machines but not end to end: see *Known limitations*. A node checks the
-  signatures a member delivers up to an allowance (4,000 in a burst, then 4,000 a minute) and answers
-  the rest "no room for now", which the sender tries again later, as it does for a full store: a member
-  can't keep a node checking signatures, and honest backlogs only wait. An envelope that failed its
-  check is remembered (up to 20,000), so sending it again costs nothing.
+  encrypted between machines but not end to end: see *Known limitations*. A node checks signatures
+  up to an allowance per member (4,000 in a burst, then 4,000 a minute) and answers the rest "no room
+  for now", which the sender tries again later, as it does for a full store: a member can't keep a node
+  checking signatures, and honest backlogs only wait. A check is charged to the member whose signature
+  it is, whichever member delivers the message, so a member can't spend another's allowance by having it
+  hand on junk; a check that fails is charged to the member that delivered it, so it can't spend
+  another's by forging in its name. A member with nothing left has nothing it delivers checked, in
+  anyone's name. What costs nothing to refuse is refused before any check, so retrying it costs the
+  sender nothing: a message that has expired, one there is no room for, a copy of one already there,
+  and one that failed its check before (up to 20,000 are remembered). A machine hands on its own mail
+  first, then the copies it holds for others in the order they arrived, not the order their senders
+  dated them.
 - **Names.** Messages and leases are addressed to a machine by its name on the member list, or by
   another name it has answered under (its Tailscale name, an address), proved by its key. A member
   can list a machine it adds under another member's Tailscale name, so a name that both a listed
   machine and another member's key answer to is treated as no one's: nothing is sent under it, and the
-  sender is told which two machines claim it and how to remove one. A machine can't join through a
-  node under a name that node knows another member, or the node itself, answers under.
+  sender is told which two machines claim it and how to remove one. Nor is anything sent to an address
+  the listed machine has answered at, which would reach it under that name; and what the listed
+  machine sends under the name waits, unshown, like mail to it. The contest ends when one of the two
+  is removed, or when the listed machine itself answers at the name: the node asks by name every
+  couple of minutes (never at an address that machine supplied), so a Tailscale name passed on to a
+  new machine clears within minutes. Until then the node keeps what it knows of the name, however
+  long both machines are quiet. A machine can't join through a node under a name that node knows
+  another member, or the node itself, answers under.
 - **Joining.** `natter invite` makes a one-time token (stored hashed, expires after 24 hours)
   and prints a `curl -k --pinnedpubkey "sha256//<key>" https://…` line. The key is an invite key,
   which the inviting node presents only while it has invites open. curl's `-k` only skips
@@ -130,7 +143,8 @@ the same membership from the same records.
   name. That key never becomes a member, and it's dropped when the member is removed. A member can
   also list a machine under a name another member answers under (see *Names*): machines that know
   the name as the other member's send nothing under it and say so, but a machine that has never
-  reached the other member under that name has only the list to go by, and sends to the newcomer.
+  reached the other member under that name has only the list to go by, and sends to the newcomer. So
+  does one whose name resolution is spoofed so that the newcomer answers at the name.
 - **A member can fill a machine's message store.** A session can have 2,000 messages waiting, but a
   member can write to made-up names, or to a session reading as fast as they arrive. A store stops at
   1 GB, so the disk is safe, but then that machine takes no new messages from anyone until old ones

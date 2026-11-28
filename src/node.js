@@ -218,7 +218,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
   function gc() {
     try {
       q.gc.run(now() - 86400_000)
-      q.forgetPeers.run(now() - PEER_FORGET_MS)
+      q.forgetPeers.run(now() - PEER_FORGET_MS, JSON.stringify(peers.contestedNames()))
       q.gcInvites.run(now() - 86400_000)
     } catch (e) { log('gc error', errMsg(e)) }
     trimLog()
@@ -438,7 +438,7 @@ export async function runNode(cfg, log = (...a) => { try { console.error(new Dat
         const mine = new Set(Array.isArray(d.mine) ? d.mine.slice(0, 2000) : [])
         try {
           tx(() => {
-            // each costs a signature check, counted against the delivering member's allowance (see checkEnv)
+            // each may cost a signature check, charged to an allowance as checkSig says (the delivering member's, if it fails)
             for (const e of Array.isArray(d.messages) ? d.messages.slice(0, 2000) : []) {
               const st = accept(e, toPump, mine.has(e?.id) ? peer.host : undefined, peer.fp)
               if (st === 'unknown-sender') unknown.push(e.id)
